@@ -1,17 +1,12 @@
 from __future__ import annotations
 
-import os, importlib, json, requests
+import os, importlib, json
 
 from typing import Any, Dict, List, Optional, Union
-from pathlib import Path
-
-from codescribe import lib
 
 __all__ = [
     "OpenAICompModel",
-    "ArgoModel",
     "AnthropicModel",
-    "TFModel",
     "ALLOWED_MODEL_TYPES",
     "Model",
     "set_neural_model",
@@ -135,132 +130,6 @@ class OpenAICompModel:
             f"OpenAICompModel(model='{self.model}', profile='{self.profile}', "
             f"outputs={self.outputs}, max_tokens={self.max_tokens})"
         )
-
-
-class ArgoModel:
-    def __init__(self, model: str) -> None:
-
-        self.api_endpoint = os.getenv("ARGO_API_ENDPOINT")
-        if not self.api_endpoint:
-            raise ValueError("ARGO_API_ENDPOINT environment variable is not set")
-
-        self.user = os.getenv("ARGO_USER")
-        if not self.user:
-            raise ValueError("ARGO_USER environment variable is not set")
-
-        self.model = model
-        self.last_usage = None
-
-    @property
-    def supports_native_tools(self) -> bool:
-        # Tool calling is implemented via prompt-mediated strict JSON, not provider-native tools.
-        return True
-
-    def _post(self, system_prompt: str, prompt_text: str) -> str:
-        data = {
-            "user": self.user,
-            "model": self.model,
-            "system": system_prompt,
-            "prompt": [prompt_text],
-            "stop": [],
-            "temperature": 0.1,
-        }
-
-        response = requests.post(
-            self.api_endpoint,
-            data=json.dumps(data),
-            headers={"Content-Type": "application/json"},
-        )
-        return response.json()["response"]
-
-    def chat(self, chat_template: List[Dict[str, str]]) -> str:
-        chat_template = list(chat_template)  # don't mutate caller's list
-
-        if chat_template and chat_template[0]["role"] == "system":
-            system_prompt = chat_template[0]["content"]
-            chat_template.pop(0)
-        else:
-            system_prompt = "You are a large language model named Argo."
-
-        prompt_text = "\n\n".join(
-            f"{item['role'].capitalize()}: {item['content'].strip()}"
-            for item in chat_template
-        )
-
-        return self._post(system_prompt, prompt_text)
-
-    def chat_with_tools(
-        self, chat_template: List[Dict[str, Any]], tools: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        # Provider doesn't support structured tools; enforce strict JSON output.
-        chat_template = list(chat_template)
-
-        if chat_template and chat_template[0].get("role") == "system":
-            system_prompt = chat_template[0].get("content") or ""
-            chat_template.pop(0)
-        else:
-            system_prompt = ""
-
-        tool_system = (
-            lib.TextProtocol.STRICT_TOOL_JSON_SYSTEM
-            + "\n\n"
-            + lib.TextProtocol.tools_to_strict_json_spec(tools)
-        )
-        system_prompt = (system_prompt + "\n\n" + tool_system).strip()
-
-        prompt_text = "\n\n".join(
-            f"{item['role'].capitalize()}: {(item.get('content') or '').strip()}"
-            for item in chat_template
-        )
-
-        raw = self._post(system_prompt, prompt_text)
-        parsed = lib.TextProtocol.parse_strict_tool_json(raw)
-        self.last_usage = None
-        return {
-            "text": parsed.get("text", ""),
-            "tool_calls": parsed.get("tool_calls", []),
-            "usage": None,
-        }
-
-    def format_tool_result_messages(
-        self,
-        tool_calls: List[Dict[str, Any]],
-        outputs: List[str],
-        reasoning_blocks: Optional[List[Dict[str, Any]]] = None,  # noqa: ARG002
-    ) -> List[Dict[str, Any]]:
-        # OpenAI-style tool result messages. reasoning_blocks ignored.
-        assistant_tool_calls = []
-        for call in tool_calls:
-            assistant_tool_calls.append(
-                {
-                    "id": call["id"],
-                    "type": "function",
-                    "function": {
-                        "name": call["name"],
-                        "arguments": json.dumps(call["arguments"], ensure_ascii=False),
-                    },
-                }
-            )
-
-        messages: List[Dict[str, Any]] = [
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": assistant_tool_calls,
-            }
-        ]
-        for call, output in zip(tool_calls, outputs):
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call["id"],
-                    "content": output,
-                }
-            )
-        return messages
-
-    def __repr__(self) -> str:
-        return f"ArgoModel(model='{self.model}', api_endpoint='***', user='***')"
 
 
 class AnthropicModel:
@@ -505,125 +374,6 @@ class AnthropicModel:
         return f"AnthropicModel(model='{self.model}')"
 
 
-class TFModel:
-    def __init__(self, checkpoint_dir: Path) -> None:
-        transformers = importlib.import_module("transformers")
-        torch = importlib.import_module("torch")
-
-        self.tokenizer = transformers.AutoTokenizer.from_pretrained(checkpoint_dir)
-        self.config = transformers.AutoConfig.from_pretrained(checkpoint_dir)
-        self.pipeline = transformers.pipeline(
-            "text-generation",
-            model=checkpoint_dir,
-            device=-1,
-        )
-
-        self.max_new_tokens = 4096
-        self.batch_size = 8
-        self.max_length = None
-        self.last_usage = None
-
-    @property
-    def supports_native_tools(self) -> bool:
-        # Tool calling is implemented via prompt-mediated strict JSON.
-        return True
-
-    def chat(self, chat_template: List[Dict[str, str]]) -> str:
-        chat_template = _merge_system_with_user(chat_template)
-
-        results = self.pipeline(
-            chat_template,
-            max_new_tokens=self.max_new_tokens,
-            max_length=self.max_length,
-            batch_size=self.batch_size,
-            eos_token_id=self.tokenizer.eos_token_id,
-            pad_token_id=50256,
-        )
-
-        return results[0]["generated_text"][-1]["content"]
-
-    def chat_with_tools(
-        self, chat_template: List[Dict[str, Any]], tools: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        # Local models don't have native tool calling; enforce strict JSON output.
-        augmented = list(chat_template)
-        tool_spec = (
-            lib.TextProtocol.STRICT_TOOL_JSON_SYSTEM
-            + "\n\n"
-            + lib.TextProtocol.tools_to_strict_json_spec(tools)
-        )
-
-        if augmented and augmented[0].get("role") == "system":
-            augmented[0] = dict(augmented[0])
-            augmented[0]["content"] = (
-                (augmented[0].get("content") or "") + "\n\n" + tool_spec
-            ).strip()
-        else:
-            augmented.insert(0, {"role": "system", "content": tool_spec})
-
-        prompt = _merge_system_with_user(
-            [{"role": m["role"], "content": m.get("content") or ""} for m in augmented]
-        )
-
-        results = self.pipeline(
-            prompt,
-            max_new_tokens=self.max_new_tokens,
-            max_length=self.max_length,
-            batch_size=self.batch_size,
-            eos_token_id=self.tokenizer.eos_token_id,
-            pad_token_id=50256,
-        )
-
-        raw = results[0]["generated_text"][-1]["content"]
-        parsed = lib.TextProtocol.parse_strict_tool_json(raw)
-        self.last_usage = None
-        return {
-            "text": parsed.get("text", ""),
-            "tool_calls": parsed.get("tool_calls", []),
-            "usage": None,
-        }
-
-    def format_tool_result_messages(
-        self,
-        tool_calls: List[Dict[str, Any]],
-        outputs: List[str],
-        reasoning_blocks: Optional[List[Dict[str, Any]]] = None,  # noqa: ARG002
-    ) -> List[Dict[str, Any]]:
-        # OpenAI-style tool result messages. reasoning_blocks ignored.
-        assistant_tool_calls = []
-        for call in tool_calls:
-            assistant_tool_calls.append(
-                {
-                    "id": call["id"],
-                    "type": "function",
-                    "function": {
-                        "name": call["name"],
-                        "arguments": json.dumps(call["arguments"], ensure_ascii=False),
-                    },
-                }
-            )
-
-        messages: List[Dict[str, Any]] = [
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": assistant_tool_calls,
-            }
-        ]
-        for call, output in zip(tool_calls, outputs):
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call["id"],
-                    "content": output,
-                }
-            )
-        return messages
-
-    def __repr__(self) -> str:
-        return f"TFModel(model={self.config.model_type}, max_new_tokens={self.max_new_tokens}, batch_size={self.batch_size}, max_length={self.max_length})"
-
-
 def _normalize_openai_tool_response(message: Any, usage: Any = None) -> Dict[str, Any]:
     text = message.content or ""
     tool_calls = []
@@ -864,54 +614,14 @@ def _normalize_anthropic_tool_response(
     }
 
 
-def _merge_system_with_user(
-    chat_template: List[Dict[str, str]]
-) -> List[Dict[str, str]]:
-    """Return a new chat template with system content prepended to the first user message.
-
-    This function does not mutate the caller's message dicts.
-    """
-
-    if not chat_template:
-        return []
-
-    # Work on copies to avoid mutating caller-owned dicts.
-    copied = [dict(m) for m in chat_template]
-
-    if copied[0].get("role") != "system":
-        return copied
-
-    system_content = copied[0].get("content", "")
-    out: List[Dict[str, str]] = []
-    system_applied = False
-
-    for msg in copied[1:]:
-        if (not system_applied) and msg.get("role") == "user":
-            msg["content"] = (
-                system_content + "\n\n" + (msg.get("content") or "")
-            ).rstrip()
-            system_applied = True
-        out.append(msg)
-
-    # If there was a system message but no user message, just drop the system.
-    return out
+ALLOWED_MODEL_TYPES = (OpenAICompModel, AnthropicModel)
+Model = Union[OpenAICompModel, AnthropicModel]
 
 
-ALLOWED_MODEL_TYPES = (OpenAICompModel, AnthropicModel, ArgoModel, TFModel)
-Model = Union[OpenAICompModel, AnthropicModel, ArgoModel, TFModel]
-
-
-def set_neural_model(model: Union[Path, str], reasoning: bool = False) -> Model:
+def set_neural_model(model: str, reasoning: bool = False) -> Model:
     """Instantiate and return the appropriate LLM based on the model string."""
-    model_str = str(model)
-    if os.path.exists(model_str):
-        return TFModel(Path(model_str))
-
     if model.lower().startswith("openai-"):
         return OpenAICompModel(model[len("openai-"):], profile="openai")
-
-    if model.lower().startswith("argo-"):
-        return ArgoModel(model[len("argo-"):])
 
     if model.lower().startswith("anthropic-"):
         return AnthropicModel(model[len("anthropic-"):], reasoning=reasoning)
@@ -921,5 +631,5 @@ def set_neural_model(model: Union[Path, str], reasoning: bool = False) -> Model:
 
     raise ValueError(
         f"Unknown model '{model}'. Use a recognized prefix: "
-        "openai-, argo-, anthropic-, oaic-, or a local path."
+        "openai-, anthropic-, or oaic-."
     )

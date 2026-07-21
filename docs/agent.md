@@ -83,9 +83,8 @@ Important clarification:
 
 - In this codebase, `supports_native_tools=True` means the backend can
   participate in the agent tool loop through the unified interface.
-- For OpenAI-compatible and Anthropic backends this is provider-native.
-- For ARGO and local Transformers paths, tool use is emulated in `_llm.py`
-  through strict JSON prompting, but the agent still sees the same shape.
+- For the supported OpenAI-compatible and Anthropic backends, this is
+  provider-native tool calling.
 
 ## System prompt and workspace context
 

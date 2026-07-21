@@ -10,8 +10,6 @@ This page documents the current backend selection logic in
 - `openai-*`
 - `oaic-*`
 - `anthropic-*`
-- `argo-*`
-- a filesystem path to a local Transformers checkpoint
 
 If none of these match, CodeScribe raises `ValueError`.
 
@@ -100,49 +98,10 @@ When enabled, the model is configured with:
 Returned thinking blocks are preserved and echoed back in
 `format_tool_result_messages(...)` as required by the Anthropic API.
 
-## `argo-*`
-
-Backend class:
-
-- `ArgoModel`
-
-Required environment variables:
-
-- `ARGO_API_ENDPOINT`
-- `ARGO_USER`
-
-Current behavior:
-
-- sends requests with `requests.post(...)`,
-- does not have provider-native structured tool calls,
-- emulates tool use by injecting a strict JSON tool protocol prompt and parsing
-  the returned JSON.
-
-## Local Transformers checkpoint path
-
-Backend class:
-
-- `TFModel`
-
-Requirements:
-
-- pass a model argument that is an existing filesystem path,
-- install optional dependencies for local Transformers use.
-
-Current behavior:
-
-- loads a text-generation pipeline from the checkpoint path,
-- merges any system prompt into the first user message,
-- emulates tool use through the same strict JSON protocol used by `ArgoModel`.
-
 ## Tool-calling note
 
-Older docs sometimes described only provider-native tool support. The current
-agent abstraction is broader:
+All supported agent backends expose the same `chat_with_tools(...)` interface to
+`Agent`.
 
-- OpenAI-compatible and Anthropic backends use provider-native tool APIs.
-- ARGO and local Transformers backends emulate tool calling through strict JSON
-  prompting in `_llm.py`.
-
-All of these backends expose the same `chat_with_tools(...)` interface to the
-agent.
+- OpenAI-compatible backends use OpenAI-style tool APIs.
+- Anthropic backends use Anthropic tool APIs.

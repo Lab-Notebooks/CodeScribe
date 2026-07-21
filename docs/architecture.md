@@ -97,8 +97,7 @@ Important current behavior:
 
 - The agent requires a model that exposes `chat_with_tools()` and reports
   `supports_native_tools=True`.
-- Some backends are truly native-tool providers; others emulate tool calling in
-  `_llm.py` but still satisfy the same interface.
+- Supported agent backends use provider-native tool calling.
 - The agent injects a compact `WORKSPACE CONTEXT` block into the latest user
   message each iteration.
 - `Agent.run()` returns a structured `RunResult`, not just a plain string.
@@ -135,8 +134,6 @@ Supported inputs today:
 - `openai-*`
 - `oaic-*`
 - `anthropic-*`
-- `argo-*`
-- a filesystem path to a local Transformers checkpoint
 
 The common abstraction is:
 

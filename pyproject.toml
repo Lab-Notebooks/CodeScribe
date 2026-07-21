@@ -23,9 +23,6 @@ dependencies = [
     "anthropic",
 ]
 
-[project.optional-dependencies]
-transformers = ["torch", "transformers"]
-
 [project.scripts]
 code-scribe = "codescribe.cli:code_scribe"
 

@@ -883,16 +883,7 @@ class Agent:
             tool_calls = response.get("tool_calls") or []
             reasoning = (response.get("reasoning") or "").strip()
             usage_raw = response.get("usage") or getattr(self.model, "last_usage", None)
-            if usage_raw:
-                iter_usage = TokenUsage.from_raw(usage_raw)
-            else:
-                output_text = text
-                if not output_text and tool_calls:
-                    output_text = json.dumps(tool_calls, ensure_ascii=False)
-                iter_usage = TokenUsage(
-                    input=lib.TextProtocol.count_message_tokens(messages),
-                    output=lib.TextProtocol.count_tokens(output_text) if output_text else 0,
-                )
+            iter_usage = TokenUsage.from_raw(usage_raw)
             state.usage += iter_usage
 
             self._observer.on_model_response(

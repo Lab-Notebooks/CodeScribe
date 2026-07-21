@@ -17,8 +17,8 @@ translation, including generation of corresponding C++ source files and
 Fortran-C++ interface layers, but the current codebase also supports
 general code inspection, generation, update, and agentic workflows.
 Codescribe can talk to multiple large language model (LLM) backends via
-hosted APIs, OpenAI-compatible endpoints, or local Transformers models,
-and it supports both prompt-driven and tool-using workflows. This makes
+hosted APIs and OpenAI-compatible endpoints, and it supports both
+prompt-driven and tool-using workflows. This makes
 it useful both for modernizing legacy scientific codes and for broader
 code-generation and maintenance tasks.
 
@@ -58,8 +58,8 @@ code-generation and maintenance tasks.
 -  Custom Prompts: Automatically generate prompts for generative AI to
    assist with the conversion process.
 
--  Language Model Integration: Use OpenAI, Anthropic, ARGO,
-   OpenAI-compatible endpoints, or local Transformers checkpoints.
+-  Language Model Integration: Use OpenAI, Anthropic, or
+   OpenAI-compatible endpoints.
 
 -  Multi-Agent Workflows: A developer authors task files that coordinate
    multiple specialized subagents. For example, a Fortran-to-C++
@@ -125,11 +125,6 @@ mode:
 
    pip install -e .
 
-To also install the optional Hugging Face / Transformers backend:
-
-.. code:: bash
-
-   pip install -e ".[transformers]"
 
 ***************
  Quick Start
@@ -221,11 +216,10 @@ Following is a brief overview of different commands:
    saved with a ``.scribe`` extension and include prompts tailored to
    each statement in the original source code.
 
-#. ``code-scribe translate <filelist> -m <model_name_or_path> -p
+#. ``code-scribe translate <filelist> -m <model_name> -p
    <seed_prompt.toml>``: Perform AI-assisted translation using a prompt
-   template and a selected model backend. The model may be a local
-   Hugging Face / Transformers checkpoint path or a prefixed hosted
-   backend such as ``openai-gpt-4o``. The ``<prompt.toml>`` file is a
+   template and a selected model backend. The model should use a
+   supported prefix such as ``openai-gpt-4o``. The ``<prompt.toml>`` file is a
    chat template that guides translation using the source and draft
    ``.scribe`` files.
 
@@ -259,33 +253,31 @@ Following is a brief overview of different commands:
    an external chat interface.
 
 #. ``code-scribe inspect <filelist> -q <query_prompt> -m
-   <model_name_or_path>``: Perform a query on a set of source files
+   <model_name>``: Perform a query on a set of source files
    using a single prompt. This is useful for navigating and
    understanding the source code.
 
-#. ``code-scribe generate <seed_prompt> -m <model_name_or_path>``:
+#. ``code-scribe generate <seed_prompt> -m <model_name>``:
    Generate new source files or applications from a prompt file.
 
 #. ``code-scribe generate "<natural_language_prompt>" -m
-   <model_name_or_path> -r <reference_file1> -r <reference_file2>``:
+   <model_name> -r <reference_file1> -r <reference_file2>``:
    Generate new source files or applications from a natural-language
    prompt while using existing files as read-only references.
 
 #. ``code-scribe update <filelist> -p <seed_prompt.toml> -m
-   <model_name_or_path>``: Modify or extend existing source files using
+   <model_name>``: Modify or extend existing source files using
    a seed prompt file.
 
 #. ``code-scribe update <filelist> -q "<natural_language_prompt>" -r
-   <reference_file1> -r <reference_file2> -m <model_name_or_path>``:
+   <reference_file1> -r <reference_file2> -m <model_name>``:
    Update files from a natural-language prompt while using additional
    files as read-only references.
 
-#. ``code-scribe agent "<task>" -m <model_name_or_path>``: Run a
+#. ``code-scribe agent "<task>" -m <model_name>``: Run a
    standalone coding agent that can iteratively use ``read``, ``glob``,
    ``bash``, ``edit``, and ``write`` tools until it reaches a final
-   answer. When a backend supports native tool calling, Codescribe uses
-   that directly; otherwise it falls back to a text protocol using
-   ``<tool_call>`` and ``<final_answer>`` blocks.
+   answer.
 
    Key flags:
 
@@ -295,7 +287,7 @@ Following is a brief overview of different commands:
    -  ``--reason``: enable adaptive thinking (Anthropic models only;
       silently ignored for all other backends).
 
-#. ``code-scribe loop <task_file> -m <model_name_or_path>``: Run a
+#. ``code-scribe loop <task_file> -m <model_name>``: Run a
    repeated bounded loop in which each session starts fresh, reads the
    task file, attempts to complete as much remaining work as possible in
    that session, and then runs review when needed. Loop status is
@@ -438,43 +430,6 @@ with a message similar to:
    **Note**: For ALCF inference endpoints, set ``OPENAI_COMP_PROVIDER``
    to a value containing ``alcf`` (e.g., ``alcf-inference``).
 
-#. **ARGO Models**: Codescribe also supports integration with Argonne's
-   ARGO models, such as ``argo-gpt4o``. The ``argo-`` prefix is
-   required. These models are accessible on the Argonne network by
-   setting ``ARGO_USER`` and ``ARGO_API_ENDPOINT``:
-
-   .. code:: bash
-
-      ▶ code-scribe translate <filelist> -m argo-gpt4o -p <seed_prompt.toml>
-
-   .. code:: bash
-
-      export ARGO_USER="your_argo_username"
-      export ARGO_API_ENDPOINT="argo_api_endpoint"
-
-   ARGO models are recommended for users with access to the Argonne
-   network.
-
-#. **Hugging Face Transformers (TFModel)**: You can use a local Hugging
-   Face / Transformers checkpoint by passing its path as the model
-   argument. Codescribe supports this through the ``TFModel`` backend.
-
-   To use a Hugging Face model, first install the optional
-   ``transformers`` extra:
-
-   .. code:: bash
-
-      pip install -e ".[transformers]"
-
-   Then specify the path to the pre-trained model using the ``-m`` flag.
-   For example, to use a GPT-2 model:
-
-   .. code:: bash
-
-      ▶ code-scribe translate <filelist> -m <path_to_model> -p <seed_prompt.toml>
-
-   You can download a model from the Hugging Face model hub by visiting
-   https://huggingface.co/models.
 
 Please see the source file ``codescribe/lib/_llm.py`` for full backend
 implementation details.
@@ -492,7 +447,6 @@ backend you select.
 -  ``OPENAI_API_KEY`` for ``openai-*`` models
 -  ``ANTHROPIC_API_KEY`` for ``anthropic-*`` models
 -  ``ANTHROPIC_BASE_URL`` (optional) for ``anthropic-*`` proxy endpoints
--  ``ARGO_USER`` and ``ARGO_API_ENDPOINT`` for ``argo-*`` models
 -  ``OPENAI_COMP_BASEURL``, ``OPENAI_COMP_PROVIDER``, and
    ``OPENAI_COMP_APIKEY`` for ``oaic-*`` models
 

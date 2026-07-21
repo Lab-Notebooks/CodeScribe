@@ -38,10 +38,6 @@ Open follow-ups that still appear relevant to the current code.
 - Add backend smoke tests for:
   - `OpenAICompModel`
   - `AnthropicModel`
-  - `ArgoModel`
-  - `TFModel`
-- Decide whether `supports_native_tools=True` is the right name for backends
-  that emulate tool calls through strict JSON prompting.
 - Document the practical support matrix for reasoning/token accounting across
   providers.
 
