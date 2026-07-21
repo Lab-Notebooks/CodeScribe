@@ -1,3 +1,7 @@
+# Copyright (c) 2026 UChicago Argonne LLC
+# SPDX-License-Identifier: Apache-2.0
+# Full license and notices: see LICENSE and NOTICE in the repo root.
+
 """Tool implementations for the standalone baremetal coding agent.
 
 This module is intentionally separate from `_agent.py` to keep the core agent loop
