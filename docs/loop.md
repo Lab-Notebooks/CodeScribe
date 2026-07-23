@@ -4,7 +4,7 @@ This page documents the current implementation in `codescribe/lib/_loop.py`.
 
 ## Overview
 
-`code-scribe loop` runs a bounded execution/review workflow over a task file.
+`code-scribe loop` runs a bounded author/review workflow over a task file.
 
 The public entry point is:
 
@@ -12,21 +12,62 @@ The public entry point is:
 
 The implementation is centered on `PromptLoopRunner`.
 
-## Current execution model
+## Loop workflow diagram
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Loop iteration (1..agent_loops)                         │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  1. Load task metadata                                  │
+│                                                         │
+│  2. ┌─────────────────────────────────────────────┐    │
+│     │ AUTHOR PHASE                                │    │
+│     │ - Fresh Agent with read/glob/bash/edit/write│    │
+│     │ - Goal: complete as much work as possible   │    │
+│     │ - Emits: STATUS: COMPLETE|INCOMPLETE        │    │
+│     │ - Logs: .codescribe/loop/author.toml        │    │
+│     └─────────────────────────────────────────────┘    │
+│                    │                                    │
+│                    ├─→ STATUS: COMPLETE? ──→ STOP      │
+│                    │                                    │
+│                    └─→ INCOMPLETE                       │
+│                         │                               │
+│  3. Build LoopSummary from author RunResult            │
+│                         │                               │
+│  4. ┌─────────────────────────────────────────────┐    │
+│     │ REVIEW PHASE                                │    │
+│     │ - Fresh Agent with read/glob/write/bash     │    │
+│     │ - Verifies author claims                    │    │
+│     │ - Writes: review_output.toml                │    │
+│     │ - Logs: .codescribe/loop/review.toml        │    │
+│     └─────────────────────────────────────────────┘    │
+│                    │                                    │
+│                    ├─→ No pending + no blocker? ──→ STOP│
+│                    │                                    │
+│                    └─→ Continue to next loop iteration  │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+Cross-loop state carried in-memory: `loop_summaries`, `review_summaries`,
+`pending_items`. Injected into next author phase task prompt.
+
+## Current author/review model
 
 For each loop iteration:
 
 1. Reload task metadata if the task file changed.
-2. Run an execution-phase agent.
-3. Build a harness-computed `LoopSummary` from the execution `RunResult`.
-4. If the execution agent reported `STATUS: COMPLETE`, stop early.
+2. Run an author-phase agent.
+3. Build a harness-computed `LoopSummary` from the author `RunResult`.
+4. If the author agent reported `STATUS: COMPLETE`, stop early.
 5. Otherwise run a review-phase agent.
 6. Read `review_output.toml` and update pending items.
 7. Stop early if review reports no pending items and no blocker.
 
 Important correction:
 
-- The current execution prompt tells the agent to complete as much work as
+- The current author prompt tells the agent to complete as much work as
   possible in one session. It is not a strict “do exactly one task and exit”
   loop.
 
@@ -56,9 +97,9 @@ The loop writes artifacts under `.codescribe/loop/`:
   - `workdir`
   - `task_file`
   - `updated_at`
-- `execution.toml`
-  - execution-phase event log for the most recent loop
-  - overwritten at the start of each execution phase
+- `author.toml`
+  - author-phase event log for the most recent loop
+  - overwritten at the start of each author phase
 - `review_output.toml`
   - structured output from the review agent
   - overwritten on each review phase
@@ -84,7 +125,7 @@ relay is still in memory.
 bash = ["rg", "python", "python3"]
 ```
 
-That `bash` list extends the bounded execution-phase bash allowlist.
+That `bash` list extends the bounded author-phase bash allowlist.
 
 ## System prompt
 
@@ -101,21 +142,21 @@ It emphasizes:
 - validating after meaningful changes,
 - using `edit` for targeted changes and `write` for new files or rewrites.
 
-## Execution phase
+## Author phase
 
-The execution phase uses:
+The author phase uses:
 
 - `Agent(...)`
 - `tools = make_tools(workdir, bash_allow=...)`
 - `max_iterations = agent_iterations`
-- logging to `.codescribe/loop/execution.toml`
+- logging to `.codescribe/loop/author.toml`
 
 If `--log` or `--log-path` is also provided, logs are fanned out through
-`MultiToolLogSink` to both the execution log and the requested extra log path.
+`MultiToolLogSink` to both the author log and the requested extra log path.
 
-### Execution task prompt
+### Author task prompt
 
-`build_execution_task(...)` injects:
+`build_author_task(...)` injects:
 
 - loop progress,
 - files created across prior loops,
@@ -124,7 +165,7 @@ If `--log` or `--log-path` is also provided, logs are fanned out through
 - pending items.
 
 That context is assembled by `format_loop_context(...)`, which is how the
-harness keeps the next execution session oriented without requiring the agent to
+harness keeps the next author session oriented without requiring the agent to
 re-read state files.
 
 Behavior differs slightly on the first loop:
@@ -138,7 +179,7 @@ workspace just for orientation.
 
 ### Completion contract
 
-The execution agent is asked to finish with `<final_answer>` containing:
+The author agent is asked to finish with `<final_answer>` containing:
 
 - `STATUS: COMPLETE` or `STATUS: INCOMPLETE`
 - the plan followed
@@ -161,7 +202,7 @@ Current review toolset:
 - `write`
 - bounded `bash`
 
-The review bash allowlist is tighter than execution:
+The review bash allowlist is tighter than the author phase:
 
 - `ls`
 - `stat`
@@ -189,10 +230,10 @@ Important correction:
 
 - a harness-computed summary of verified actions,
 - any rejected tool calls,
-- the execution agent’s final report,
+- the author agent’s final report,
 - the path where it must write `review_output.toml`.
 
-Rejected calls are important: they were attempted by the execution agent but the
+Rejected calls are important: they were attempted by the author agent but the
 harness refused to run them, so they had no workspace effect and should be
 considered unverified.
 
@@ -235,7 +276,7 @@ Important correction:
 
 The loop stops early in either of these cases:
 
-1. The execution agent emits `STATUS: COMPLETE`.
+1. The author agent emits `STATUS: COMPLETE`.
 2. The review output contains:
    - no pending items, and
    - an empty blocker.
@@ -266,6 +307,6 @@ The loop implementation and CLI option defaults agree on the current limits.
 
 However, the command help text in `codescribe/cli/_commands.py` still contains
 older wording that says each loop picks the single most important next task and
-exits. That description is stale relative to the current execution prompt in
+exits. That description is stale relative to the current author prompt in
 `codescribe/lib/_loop.py`, which instructs the agent to complete as much work as
 possible in one session.

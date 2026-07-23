@@ -23,13 +23,15 @@ class OpenAICompModel:
     # number of tokens the model may generate for the reply (i.e., output tokens).
     # Default bumped to allow more verbose reasoning / planning.
     max_tokens = int(os.getenv("CODESCRIBE_MAX_TOKENS", "24576"))
-    reasoning_effort: Optional[str] = "high"
 
-    def __init__(self, model: str, profile: str = "oaic") -> None:
+    def __init__(
+        self, model: str, profile: str = "oaic", reasoning: bool = False
+    ) -> None:
         openai = importlib.import_module("openai")
 
         self.model = model
         self.profile = profile
+        self.reasoning_effort: Optional[str] = "high" if reasoning else None
 
         if profile == "openai":
             self.apikey = os.getenv("OPENAI_API_KEY")
@@ -625,13 +627,17 @@ Model = Union[OpenAICompModel, AnthropicModel]
 def set_neural_model(model: str, reasoning: bool = False) -> Model:
     """Instantiate and return the appropriate LLM based on the model string."""
     if model.lower().startswith("openai-"):
-        return OpenAICompModel(model[len("openai-"):], profile="openai")
+        return OpenAICompModel(
+            model[len("openai-"):], profile="openai", reasoning=reasoning
+        )
 
     if model.lower().startswith("anthropic-"):
         return AnthropicModel(model[len("anthropic-"):], reasoning=reasoning)
 
     if model.lower().startswith("oaic-"):
-        return OpenAICompModel(model[len("oaic-"):], profile="oaic")
+        return OpenAICompModel(
+            model[len("oaic-"):], profile="oaic", reasoning=reasoning
+        )
 
     raise ValueError(
         f"Unknown model '{model}'. Use a recognized prefix: "

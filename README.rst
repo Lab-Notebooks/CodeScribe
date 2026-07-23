@@ -296,7 +296,7 @@ Following is a brief overview of different commands:
    Key flags:
 
    -  ``--workdir DIR``: root directory the agent is bounded to.
-   -  ``--agent-loops`` / ``-nloop N``: number of execution → review
+   -  ``--agent-loops`` / ``-nloop N``: number of author → review
       cycles (default 5).
    -  ``--agent-iterations`` / ``-niter N``: tool-call budget per cycle
       (default 30).
@@ -335,7 +335,7 @@ crash-resume:
 
 -  ``run.toml`` — run metadata (model, limits, run_id)
 -  ``state.toml`` — mutable loop state (loop index, current phase)
--  ``execution.toml`` — event log for the most recent execution phase
+-  ``author.toml`` — event log for the most recent author phase
 -  ``review_output.toml`` — review agent's structured output
 -  ``review.toml`` — event log for the review agent
 
@@ -343,7 +343,7 @@ A typical verbose loop session looks like this:
 
 .. code:: text
 
-   ▶  loop 1 [execution]
+   ▶  loop 1 [author]
      iter 1
        │ Let me start by reading the task file and understanding the current state.
        usage  in 2,517  out 162  total 2,679

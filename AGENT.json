@@ -14,7 +14,7 @@
       "Incremental Fortran \u2192 C++ translation (with interface-layer support)", 
       "Code inspection, generation, and update", 
       "Tool-using coding agent workflows (read/glob/bash/edit/write)", 
-      "Bounded execution\u2192review loop over a task file with durable on-disk state"
+      "Bounded author\u2192review loop over a task file with durable on-disk state"
     ], 
     "summary": "AI-assisted framework for scientific software development: incremental Fortran\u2192C++ translation plus code inspection/generation/update and tool-using agent workflows."
   }, 
@@ -38,10 +38,10 @@
       "Bounded mode is a practical constraint layer, not an OS sandbox.", 
       "Bounded bash uses an allowlist and rejects shell metacharacters; some commands will fail by design.", 
       "The loop task file can extend the bash allowlist via a [tools] bash = [...] TOML section.", 
-      "TOML diagnostic logs include tool_start (with model_reasoning) and tool_end (with output_preview) events for post-run inspection.", 
-      "Agent hard limits per run: 120 total tool calls, 10 per iteration, 2 repeat-call attempts (read gets 3x). After 3 consecutive all-error iterations the agent is nudged to emit a BLOCKED answer.", 
-      "Tool outputs are capped at 8000 chars in message history; truncated output includes a paging hint (read(path, offset=N)).", 
-      "review.toml (review-phase event log) is always written unconditionally. execution.toml is cleared and rewritten at the start of each execution phase. Both differ from --log, which routes execution events to an additional user-specified path.", 
+      "TOML diagnostic logs include tool_start (with model_reasoning) and tool_end (with output_preview) events for post-run inspection.",
+      "Agent hard limits per run: 120 total tool calls, 10 per iteration, 2 repeat-call attempts (read gets 3x). After 3 consecutive all-error iterations the agent is nudged to emit a BLOCKED answer.",
+      "Tool outputs are capped at 8000 chars in message history; truncated output includes a paging hint (read(path, offset=N)).",
+      "review.toml (review-phase event log) is always written unconditionally. author.toml is cleared and rewritten at the start of each author phase. Both differ from --log, which routes author-phase events to an additional user-specified path.",
       "The review agent's bash tool is restricted to: ls, stat, pwd, find, grep, head, tail, which, env, rg. No write, edit, or arbitrary shell commands."
     ], 
     "modes": [
@@ -49,20 +49,20 @@
         "artifacts": [
           ".codescribe/loop/run.toml", 
           ".codescribe/loop/state.toml", 
-          ".codescribe/loop/execution.toml", 
+          ".codescribe/loop/author.toml", 
           ".codescribe/loop/review_output.toml", 
           ".codescribe/loop/review.toml"
         ], 
         "bounded": true, 
         "command": "loop", 
-        "description": "Repeated execution\u2192review cycles. Cross-loop state is carried in-memory; each cycle starts a fresh agent whose context is injected by the harness. The loop exits early if the review agent reports no pending items and no blocker. On-disk artifacts under .codescribe/loop/ are for inspection and crash-resume only.", 
+        "description": "Repeated author\u2192review cycles. Cross-loop state is carried in-memory; each cycle starts a fresh agent whose context is injected by the harness. The loop exits early if the review agent reports no pending items and no blocker. On-disk artifacts under .codescribe/loop/ are for inspection and crash-resume only.", 
         "options": {
           "--workdir DIR": "Root directory the agent is bounded to (default: cwd)", 
           "--agent-iterations/-niter N": "Tool-call budget per cycle (default: 30)", 
           "--reason": "Enable adaptive thinking (Anthropic models only; ignored for other backends)", 
           "--log": "Write TOML diagnostic events to the default path: .codescribe/logs/toolusage.toml", 
           "--verbose/-v": "Stream per-iteration tool calls and token usage to stdout", 
-          "--agent-loops/-nloop N": "Number of execution\u2192review cycles (default: 5)", 
+          "--agent-loops/-nloop N": "Number of author\u2192review cycles (default: 5)", 
           "--log-path PATH": "Write TOML diagnostic events to PATH (implies --log)"
         }
       }, 

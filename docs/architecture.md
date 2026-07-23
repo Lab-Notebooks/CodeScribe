@@ -56,6 +56,25 @@ Examples:
 
 The codebase currently has two distinct styles of execution.
 
+```
+┌──────────────────────────┬──────────────────────────┐
+│   Prompt-driven          │   Agent-driven           │
+├──────────────────────────┼──────────────────────────┤
+│ Task → Model Chat        │ Task → Agent with tools  │
+│    ↓                     │    ↓                     │
+│ Parse tags → Results     │ Tool loop + recursion    │
+│    ↓                     │    ↓                     │
+│ Deterministic output     │ Bounded iteration        │
+│                          │    ↓                     │
+│ No tool execution        │ RunResult structure      │
+│                          │                          │
+│ Examples:                │ Examples:                │
+│ - prompt_translate       │ - prompt_inspect        │
+│ - prompt_generate        │ - prompt_agent          │
+│ - prompt_update          │ - prompt_loop           │
+└──────────────────────────┴──────────────────────────┘
+```
+
 ### 1. Prompt-driven commands
 
 Implemented in `codescribe/lib/_cmd.py`:
@@ -74,7 +93,7 @@ Implemented by `codescribe/lib/_agent.py` and `codescribe/lib/_loop.py`:
 - `prompt_inspect` uses `Agent` with bounded read-only tools.
 - `prompt_agent` uses `Agent` with the default bounded toolset rooted at the
   current working directory.
-- `prompt_loop` runs repeated execution/review agent sessions.
+- `prompt_loop` runs repeated author/review agent sessions.
 
 ## Agent runtime
 
@@ -104,11 +123,11 @@ Important current behavior:
 
 ## Loop runtime
 
-`codescribe/lib/_loop.py` implements a bounded execution/review loop.
+`codescribe/lib/_loop.py` implements a bounded author/review loop.
 
 Current design:
 
-- Each execution phase starts a fresh `Agent`.
+- Each author phase starts a fresh `Agent`.
 - Each review phase starts a separate fresh `Agent`.
 - Cross-loop state is carried in Python objects inside `PromptLoopRunner`:
   - `loop_summaries`
@@ -121,7 +140,7 @@ Notable files written by the loop harness:
 
 - `.codescribe/loop/run.toml`
 - `.codescribe/loop/state.toml`
-- `.codescribe/loop/execution.toml`
+- `.codescribe/loop/author.toml`
 - `.codescribe/loop/review_output.toml`
 - `.codescribe/loop/review.toml`
 
@@ -169,7 +188,7 @@ A few stale descriptions are easy to get wrong when reading older docs:
   unrestricted filesystem toolset.
 - `prompt_inspect()` includes bounded `bash` through `make_readonly_tools()`;
   it is not limited to only `read` and `glob`.
-- The loop execution phase is instructed to complete as much work as possible in
+- The loop author phase is instructed to complete as much work as possible in
   one session, not exactly one task per loop.
 - The review phase can use `read`, `glob`, `write`, and a tightly restricted
   bounded `bash` tool.

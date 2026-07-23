@@ -3,7 +3,7 @@
 # CodeScribe Quicktest
 
 export CODESCRIBE_TUTORIAL_PATH="tutorial"
-export CODESCRIBE_MODEL="oaic-claudeopus46"
+export CODESCRIBE_MODEL="oaic-gpt54"
 
 cd $CODESCRIBE_TUTORIAL_PATH/src
 code-scribe index .

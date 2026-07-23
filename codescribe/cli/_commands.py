@@ -416,8 +416,8 @@ def loop(
     \b
 
     \b
-    Each loop runs a fresh bounded execution session over the task file.
-    The execution agent tries to complete as much remaining work as possible
+    Each loop runs a fresh bounded author session over the task file.
+    The author agent tries to complete as much remaining work as possible
     in that session, and a separate review phase runs when needed.
     Cross-loop continuity is carried by harness-injected summaries.
     \b

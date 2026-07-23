@@ -18,9 +18,9 @@ Open follow-ups that still appear relevant to the current code.
 ## Loop
 
 - Add tests for `PromptLoopRunner` early-exit behavior:
-  - execution `STATUS: COMPLETE`
+  - author `STATUS: COMPLETE`
   - empty review `pending` and blocker
-- Decide whether review should always run after execution, or whether the
+- Decide whether review should always run after author phase, or whether the
   current “skip review on STATUS: COMPLETE” behavior is final API.
 - Document or implement a clearer crash-resume story for `.codescribe/loop/`
   artifacts.

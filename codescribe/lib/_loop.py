@@ -10,13 +10,13 @@ State relay design:
   - Within a loop (iteration → iteration): message history + WORKSPACE CONTEXT block.
   - Across loops (loop N → loop N+1): Python objects held in prompt_loop().
     The harness builds LoopSummary from the agent's structured RunResult after
-    each execution and injects it directly into the next loop's task string.
+    each author phase and injects it directly into the next loop's task string.
     Agents never read state files to orient themselves.
 
 Persistent files (for inspection / crash-resume only):
   run.toml        — run configuration
   state.toml      — current loop index + phase
-  execution.toml  — raw event log for the most recent execution phase
+  author.toml     — raw event log for the most recent author phase
   review_output.toml — structured output from the review agent (pending items)
 """
 
@@ -37,7 +37,7 @@ __all__ = [
     "write_state",
     "LoopSummary",
     "build_system_prompt",
-    "build_execution_task",
+    "build_author_task",
     "build_review_task",
     "prompt_loop",
 ]
@@ -53,7 +53,7 @@ class LoopPaths:
     run_dir: Path
     run_toml: Path
     state_toml: Path
-    execution_toml: Path       # raw event log (overwritten each execution phase)
+    author_toml: Path          # raw event log (overwritten each author phase)
     review_output_toml: Path   # review agent's structured output (overwritten each review)
 
 
@@ -63,7 +63,7 @@ def get_loop_paths(workdir: Path) -> LoopPaths:
         run_dir=run_dir,
         run_toml=run_dir / "run.toml",
         state_toml=run_dir / "state.toml",
-        execution_toml=run_dir / "execution.toml",
+        author_toml=run_dir / "author.toml",
         review_output_toml=run_dir / "review_output.toml",
     )
 
@@ -72,7 +72,7 @@ def get_loop_paths(workdir: Path) -> LoopPaths:
 # State persistence (TOML)
 # ---------------------------------------------------------------------------
 
-_VALID_PHASES = frozenset({"idle", "execution", "review"})
+_VALID_PHASES = frozenset({"idle", "author", "review"})
 
 
 def load_state(path: Path) -> Optional[Dict[str, Any]]:
@@ -114,7 +114,7 @@ def init_state(*, run_id: str, workdir: Path, task_file: Path) -> Dict[str, Any]
 
 @dataclass
 class LoopSummary:
-    """Harness-computed summary of one execution phase.
+    """Harness-computed summary of one author phase.
 
     Built deterministically from the TOML event log — no LLM involved.
     Carried in-memory by prompt_loop() and injected into subsequent task prompts.
@@ -216,14 +216,14 @@ class PromptLoopRunner:
         lib.atomic_write_toml(self.paths.run_toml, self.run_toml_data)
         self.loops_completed = loop_idx
 
-    def build_execution_logging(self) -> lib.ToolLogSink:
-        exec_log: lib.ToolLogSink = lib.ToolLogToml(path=str(self.paths.execution_toml))
+    def build_author_logging(self) -> lib.ToolLogSink:
+        author_log: lib.ToolLogSink = lib.ToolLogToml(path=str(self.paths.author_toml))
         if self.logging is not None:
             extra_log = lib.ToolLogToml(path=str(self.logging) if str(self.logging) else None)
-            exec_log = lib.MultiToolLogSink([exec_log, extra_log])
-        return exec_log
+            author_log = lib.MultiToolLogSink([author_log, extra_log])
+        return author_log
 
-    def build_execution_agent(self, logging: lib.ToolLogSink) -> lib.Agent:
+    def build_author_agent(self, logging: lib.ToolLogSink) -> lib.Agent:
         return lib.Agent(
             self.neural_model,
             tools=self.tools,
@@ -240,18 +240,18 @@ class PromptLoopRunner:
         except OSError:
             return ""
 
-    def run_execution_phase(self, loop_idx: int) -> tuple[LoopSummary, str, Optional[str]]:
+    def run_author_phase(self, loop_idx: int) -> tuple[LoopSummary, str, Optional[str]]:
         if self.verbose:
-            print(f"\n▶  loop {loop_idx} [execution]")
+            print(f"\n▶  loop {loop_idx} [author]")
 
-        self.update_state(loop_index=loop_idx, phase="execution")
-        lib.atomic_write_text(self.paths.execution_toml, "")
+        self.update_state(loop_index=loop_idx, phase="author")
+        lib.atomic_write_text(self.paths.author_toml, "")
 
-        exec_log = self.build_execution_logging()
-        exec_agent = self.build_execution_agent(exec_log)
+        author_log = self.build_author_logging()
+        author_agent = self.build_author_agent(author_log)
         task_content = self.read_initial_task_content(loop_idx)
 
-        exec_task = build_execution_task(
+        author_task = build_author_task(
             workdir=self.workdir_path,
             task_rel=self.task_rel,
             task_content=task_content,
@@ -261,14 +261,14 @@ class PromptLoopRunner:
             pending_items=self.pending_items,
         )
 
-        exec_result = exec_agent.run(exec_task, system=self.system, chat_history=self.chat_history)
-        exec_answer = exec_result.final_text or ""
-        loop_summary = loop_summary_from_result(loop_idx, exec_result)
+        author_result = author_agent.run(author_task, system=self.system, chat_history=self.chat_history)
+        author_answer = author_result.final_text or ""
+        loop_summary = loop_summary_from_result(loop_idx, author_result)
 
         self.loop_summaries.append(loop_summary)
-        self.pending_items = extract_pending_items(exec_answer)
+        self.pending_items = extract_pending_items(author_answer)
         self.persist_run_progress(loop_idx)
-        return loop_summary, exec_answer, extract_status(exec_answer)
+        return loop_summary, author_answer, extract_status(author_answer)
 
     def build_review_tools(self) -> List[lib.AgentTool]:
         review_bash_allow = {"ls", "stat", "pwd", "find", "grep", "head", "tail", "which", "env", "rg"}
@@ -340,18 +340,18 @@ class PromptLoopRunner:
     def run(self) -> str:
         for loop_idx in range(1, self.agent_loops + 1):
             self.reload_task_context_if_needed()
-            loop_summary, exec_answer, status = self.run_execution_phase(loop_idx)
+            loop_summary, author_answer, status = self.run_author_phase(loop_idx)
 
             if status == "COMPLETE":
                 if self.verbose:
                     print(
-                        f"\n✓ execution agent reported STATUS: COMPLETE after loop {loop_idx} "
+                        f"\n✓ author agent reported STATUS: COMPLETE after loop {loop_idx} "
                         "— task complete, stopping early."
                     )
                 self.pending_items = []
                 break
 
-            if self.run_review_phase(loop_idx, loop_summary, exec_answer):
+            if self.run_review_phase(loop_idx, loop_summary, author_answer):
                 break
 
         return (
@@ -449,7 +449,7 @@ def format_loop_context(
     loop_summaries: List[LoopSummary],
     pending_items: List[str],
 ) -> str:
-    """Build the injected context block that orients the execution agent.
+    """Build the injected context block that orients the author agent.
 
     This replaces the agent having to read state/history/plan files.
     """
@@ -497,7 +497,7 @@ def format_loop_context(
     return "\n".join(lines)
 
 
-def build_execution_task(
+def build_author_task(
     *,
     workdir: Path,
     task_rel: str,
@@ -530,7 +530,7 @@ def build_execution_task(
         f"{context}\n\n"
         f"Working directory: {workdir}\n"
         f"Task file: {task_rel} (read-only — contains the full specification)\n\n"
-        "PHASE: EXECUTION\n\n"
+        "PHASE: AUTHOR\n\n"
         "Goal: COMPLETE the task in this single session if at all possible. Implement every\n"
         "remaining item you can, verify it, and only stop when the task is fully done or you\n"
         "are genuinely blocked. Do NOT implement just one item and defer the rest to a later\n"
@@ -587,7 +587,7 @@ def build_review_task(
     verified_block = "\n".join(summary_lines)
 
     # Calls the agent attempted but the harness refused to run. These did NOT
-    # touch the workspace, so any execution-report claim that depends on one of
+    # touch the workspace, so any author-report claim that depends on one of
     # them is unverified and must be flagged.
     rejected_block = ""
     if loop_summary.rejected:
@@ -606,11 +606,11 @@ def build_review_task(
         f"{verified_block}\n\n"
         + (f"{rejected_block}\n\n" if rejected_block else "")
         + (
-            f"\n[Execution agent report — loop {loop_index}]\n\n{exec_answer}\n\n"
+            f"\n[Author agent report — loop {loop_index}]\n\n{exec_answer}\n\n"
             if exec_answer else ""
         )
         + "Your job:\n"
-        "1. Cross-reference the execution report's claims against the verified actions above.\n"
+        "1. Cross-reference the author report's claims against the verified actions above.\n"
         "   File reads listed above are verified — treat the agent's claims about those\n"
         "   files as trustworthy. Only flag claims about files NOT in the verified list.\n"
         "   Any claim that relies on an 'Attempted but NOT executed' call did NOT actually\n"
@@ -646,7 +646,7 @@ def ensure_within_workdir(path: Path, workdir: Path) -> Path:
 
 
 def extract_pending_items(final_text: str) -> List[str]:
-    """Parse NEXT STEPS: section from an execution agent's final_answer."""
+    """Parse NEXT STEPS: section from an author agent's final_answer."""
     items: List[str] = []
     in_section = False
     for line in (final_text or "").splitlines():
@@ -713,21 +713,21 @@ def prompt_loop(
     workdir: Optional[Union[Path, str]] = None,
     reason: bool = False,
 ) -> str:
-    """Run a bounded execution → review loop.
+    """Run a bounded author → review loop.
 
     Cross-loop state is carried entirely in-memory (loop_summaries, pending_items).
     Agents receive context injected into their task strings — they do not read
     state or history files to orient themselves.
 
     Per loop:
-      1) EXECUTION agent: reads task file + does work + reports STATUS + NEXT STEPS.
+      1) AUTHOR agent: reads task file + does work + reports STATUS + NEXT STEPS.
          If it reports STATUS: COMPLETE, the loop exits early (review skipped).
       2) REVIEW agent: receives harness-computed action summary + writes review_output.toml.
 
     Persistent files under `.codescribe/loop/` (for inspection / crash-resume):
       run.toml             — run configuration
       state.toml           — current loop index + phase
-      execution.toml       — raw TOML event log for the most recent execution phase
+      author.toml          — raw TOML event log for the most recent author phase
       review_output.toml   — review agent's structured output
     """
     runner = PromptLoopRunner(
