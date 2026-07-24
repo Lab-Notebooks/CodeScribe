@@ -433,3 +433,28 @@ def loop(
         reason=reason,
     )
     click.echo(result)
+
+
+@code_scribe.command(name="loop-eval")
+@click.argument("metadata-dirs", nargs=-1, required=True, type=click.Path(exists=True, file_okay=False, dir_okay=True))
+@click.option(
+    "--output",
+    "output_path",
+    required=False,
+    default="loop-telemetry-comparison.png",
+    type=click.Path(dir_okay=True, file_okay=True, writable=True),
+    help="PNG path to write comparison plots to.",
+)
+def loop_eval(metadata_dirs: List[Path], output_path: Union[str, Path]) -> None:
+    """
+    \b
+    Compare one or more .codescribe/loop/metadata directories
+    \b
+
+    \b
+    Creates subplot-based PNG figures for token usage and related loop telemetry.
+    Legend labels are derived from the last path component of each metadata dir.
+    \b
+    """
+    result = api.loop_eval([Path(p) for p in metadata_dirs], Path(output_path))
+    click.echo(result)

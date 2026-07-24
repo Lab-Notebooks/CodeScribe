@@ -149,3 +149,9 @@ def loop(
         workdir=workdir,
         reason=reason,
     )
+
+
+def loop_eval(metadata_dirs: List[Path], output_path: Path) -> str:
+    """API command for plotting loop telemetry comparisons."""
+    written = lib.plot_loop_metadata_comparison(metadata_dirs, output_path=output_path)
+    return f"wrote {written}"

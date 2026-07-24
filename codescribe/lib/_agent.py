@@ -144,6 +144,20 @@ class RejectedCall:
 
 
 @dataclass
+class IterationTelemetry:
+    """Normalized per-iteration telemetry for downstream loop analysis."""
+
+    iteration: int
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_tokens: int = 0
+    cache_write_tokens: int = 0
+    cache_read_tokens: int = 0
+    tool_calls_requested: int = 0
+    had_final_text: bool = False
+
+
+@dataclass
 class RunResult:
     """Structured outcome of Agent.run().
 
@@ -158,6 +172,7 @@ class RunResult:
     iterations: int
     tool_results: List[ToolResult] = field(default_factory=list)
     rejected_calls: List[RejectedCall] = field(default_factory=list)
+    iteration_telemetry: List[IterationTelemetry] = field(default_factory=list)
 
     def __str__(self) -> str:
         if self.final_text is not None:
@@ -180,6 +195,7 @@ class RunState:
     tool_results: List[ToolResult] = field(default_factory=list)
     rejected_calls: List[RejectedCall] = field(default_factory=list)
     usage: TokenUsage = field(default_factory=TokenUsage)
+    iteration_telemetry: List[IterationTelemetry] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -906,6 +922,18 @@ class Agent:
                     "model_reasoning": reasoning[:500] if reasoning else None,
                 }
             )
+            state.iteration_telemetry.append(
+                IterationTelemetry(
+                    iteration=iters_done,
+                    input_tokens=iter_usage.input,
+                    output_tokens=iter_usage.output,
+                    reasoning_tokens=iter_usage.reasoning,
+                    cache_write_tokens=iter_usage.cache_write,
+                    cache_read_tokens=iter_usage.cache_read,
+                    tool_calls_requested=len(tool_calls),
+                    had_final_text=bool(text),
+                )
+            )
 
             # ReAct rule: if tool calls exist, execute them even if some text is also present.
             if tool_calls:
@@ -958,6 +986,7 @@ class Agent:
             iterations=iters_done,
             tool_results=state.tool_results,
             rejected_calls=state.rejected_calls,
+            iteration_telemetry=state.iteration_telemetry,
         )
 
         self._observer.on_run_end(result)

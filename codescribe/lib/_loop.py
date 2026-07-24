@@ -18,6 +18,7 @@ Persistent files (for inspection / crash-resume only):
   state.toml      — current loop index + phase
   author.toml     — raw event log for the most recent author phase
   review_output.toml — structured output from the review agent (pending items)
+  metadata/       — durable normalized per-phase telemetry for plotting
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ class LoopPaths:
     """Paths under `.codescribe/loop/` for a single shared run."""
 
     run_dir: Path
+    metadata_dir: Path
     run_toml: Path
     state_toml: Path
     author_toml: Path          # raw event log (overwritten each author phase)
@@ -61,6 +63,7 @@ def get_loop_paths(workdir: Path) -> LoopPaths:
     run_dir = workdir / ".codescribe" / "loop"
     return LoopPaths(
         run_dir=run_dir,
+        metadata_dir=run_dir / "metadata",
         run_toml=run_dir / "run.toml",
         state_toml=run_dir / "state.toml",
         author_toml=run_dir / "author.toml",
@@ -160,6 +163,7 @@ class PromptLoopRunner:
         self.pending_items: List[str] = []
         self.loops_completed = 0
         self.task_mtime: float = 0.0
+        self.phase_metadata_files: List[Path] = []
 
         self.load_task_context()
         self.initialize_paths()
@@ -173,6 +177,7 @@ class PromptLoopRunner:
 
     def initialize_paths(self) -> None:
         os.makedirs(self.paths.run_dir, exist_ok=True)
+        lib.ensure_loop_metadata_dir(self.paths.run_dir)
 
     def initialize_run_record(self) -> None:
         self.run_toml_data = {
@@ -214,6 +219,11 @@ class PromptLoopRunner:
         update_cumulative_tokens(self.run_toml_data, self.loop_summaries + self.review_summaries)
         self.run_toml_data["loops_completed"] = loop_idx
         lib.atomic_write_toml(self.paths.run_toml, self.run_toml_data)
+        lib.write_loop_manifest(
+            self.paths.metadata_dir,
+            run_doc=self.run_toml_data,
+            phase_files=self.phase_metadata_files,
+        )
         self.loops_completed = loop_idx
 
     def build_author_logging(self) -> lib.ToolLogSink:
@@ -261,12 +271,32 @@ class PromptLoopRunner:
             pending_items=self.pending_items,
         )
 
+        phase_timer = lib.Timer()
         author_result = author_agent.run(author_task, system=self.system, chat_history=self.chat_history)
+        phase_duration_s = phase_timer.ms / 1000.0
         author_answer = author_result.final_text or ""
         loop_summary = loop_summary_from_result(loop_idx, author_result)
 
         self.loop_summaries.append(loop_summary)
         self.pending_items = extract_pending_items(author_answer)
+        self.phase_metadata_files.append(
+            lib.write_loop_phase_metadata(
+                self.paths.metadata_dir,
+                run_id=self.run_id,
+                loop_index=loop_idx,
+                phase="author",
+                model=str(self.model),
+                task_file=str(self.task_path),
+                workdir=str(self.workdir_path),
+                stop_reason=author_result.stop_reason,
+                final_text_present=bool(author_result.final_text),
+                usage=author_result.usage,
+                iterations=author_result.iterations,
+                tool_results=author_result.tool_results,
+                rejected_calls=author_result.rejected_calls,
+                duration_s=phase_duration_s,
+            )
+        )
         self.persist_run_progress(loop_idx)
         return loop_summary, author_answer, extract_status(author_answer)
 
@@ -318,9 +348,29 @@ class PromptLoopRunner:
             exec_answer=exec_answer or "",
         )
 
+        phase_timer = lib.Timer()
         review_result = review_agent.run(review_task, system=self.system)
+        phase_duration_s = phase_timer.ms / 1000.0
         review_loop_summary = loop_summary_from_result(loop_idx, review_result)
         self.review_summaries.append(review_loop_summary)
+        self.phase_metadata_files.append(
+            lib.write_loop_phase_metadata(
+                self.paths.metadata_dir,
+                run_id=self.run_id,
+                loop_index=loop_idx,
+                phase="review",
+                model=str(self.model),
+                task_file=str(self.task_path),
+                workdir=str(self.workdir_path),
+                stop_reason=review_result.stop_reason,
+                final_text_present=bool(review_result.final_text),
+                usage=review_result.usage,
+                iterations=review_result.iterations,
+                tool_results=review_result.tool_results,
+                rejected_calls=review_result.rejected_calls,
+                duration_s=phase_duration_s,
+            )
+        )
         self.persist_run_progress(loop_idx)
 
         review_data = read_review_output(self.paths.review_output_toml)
