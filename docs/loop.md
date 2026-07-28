@@ -105,6 +105,10 @@ The loop writes artifacts under `.codescribe/loop/`:
   - overwritten on each review phase
 - `review.toml`
   - review-phase event log
+- `metadata/`
+  - durable normalized per-phase telemetry files for plotting/comparison
+    (tokens, iterations, wall time)
+  - includes `manifest.toml` plus `loop_###_author.toml` / `loop_###_review.toml`
 
 These files are useful for inspection and crash recovery, but the main state
 relay is still in memory.
@@ -310,3 +314,21 @@ older wording that says each loop picks the single most important next task and
 exits. That description is stale relative to the current author prompt in
 `codescribe/lib/_loop.py`, which instructs the agent to complete as much work as
 possible in one session.
+
+## loop-eval
+
+`code-scribe loop-eval DIR [DIR ...]` compares one or more
+`.codescribe/loop/metadata` directories and writes a PNG figure.
+
+Current comparison figure uses subplots for:
+
+- input tokens
+- output tokens
+- cache write tokens
+- cache read tokens
+- wall time per phase
+- author token mix
+- review token mix
+
+Legend labels are derived from the last path component of each supplied
+metadata directory.
