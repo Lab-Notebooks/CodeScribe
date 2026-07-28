@@ -443,7 +443,7 @@ backend you select.
 
 -  ``CODESCRIBE_MODEL``: default model name used when ``-m`` is omitted.
 -  ``CODESCRIBE_MAX_TOKENS``: maximum output tokens per model reply
-   (default: 24576).
+   (default: 32768).
 -  ``OPENAI_API_KEY`` for ``openai-*`` models
 -  ``ANTHROPIC_API_KEY`` for ``anthropic-*`` models
 -  ``ANTHROPIC_BASE_URL`` (optional) for ``anthropic-*`` proxy endpoints

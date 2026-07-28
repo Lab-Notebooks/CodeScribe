@@ -97,11 +97,11 @@
         "ANTHROPIC_API_KEY=sk-ant-... code-scribe loop task.toml -m anthropic-claude-sonnet-4-6 --reason"
       ], 
       "optional_env": [
-        "CODESCRIBE_AGENT_REASONING", 
-        "ANTHROPIC_BASE_URL", 
+        "CODESCRIBE_MODEL_REASONING",
+        "ANTHROPIC_BASE_URL",
         "CODESCRIBE_MAX_TOKENS"
-      ], 
-      "reasoning_note": "Pass --reason to agent or loop to enable adaptive thinking. Reasoning is configured at the LLM level (AnthropicModel) and silently ignored by OpenAI-compatible backends. The agent relays returned reasoning_blocks verbatim into the next turn, as required by the Anthropic API. CODESCRIBE_AGENT_REASONING=1 env var is also supported as a fallback for scripting/CI. Recommended for claude-sonnet-4-6 and claude-opus-* on complex agentic tasks. Do not enable for Haiku or older models.", 
+      ],
+      "reasoning_note": "Pass --reason to agent or loop to enable adaptive thinking. Reasoning is configured at the LLM level (AnthropicModel) and silently ignored by OpenAI-compatible backends. The agent relays returned reasoning_blocks verbatim into the next turn, as required by the Anthropic API. CODESCRIBE_MODEL_REASONING=1 env var is also supported as a fallback for scripting/CI. Recommended for claude-sonnet-4-6 and claude-opus-* on complex agentic tasks. Do not enable for Haiku or older models.",
       "required_env": [
         "ANTHROPIC_API_KEY"
       ], 
@@ -122,7 +122,7 @@
         "required": false, 
         "example": "8192", 
         "name": "CODESCRIBE_MAX_TOKENS", 
-        "description": "Maximum output tokens the model may generate per reply. Applies to all backends. Default: 24576."
+        "description": "Maximum output tokens the model may generate per reply. Applies to all backends. Default: 32768."
       }, 
       {
         "required": true, 
@@ -161,9 +161,9 @@
         "description": "Optional base URL override for Anthropic models (e.g. a proxy endpoint)."
       }, 
       {
-        "required": false, 
-        "example": "1", 
-        "name": "CODESCRIBE_AGENT_REASONING", 
+        "required": false,
+        "example": "1",
+        "name": "CODESCRIBE_MODEL_REASONING",
         "description": "Set to '1' to enable adaptive thinking on supported Anthropic models (claude-opus-*, claude-sonnet-4-6). Has no effect on OpenAI-compatible backends."
       }
     ], 

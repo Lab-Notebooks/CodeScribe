@@ -15,10 +15,10 @@ If none of these match, CodeScribe raises `ValueError`.
 
 ## Common output-token setting
 
-All backends read `CODESCRIBE_MAX_TOKENS`, though defaults differ slightly by
-backend implementation:
+All backends read `CODESCRIBE_MAX_TOKENS`. Both backends currently default to
+the same value:
 
-- `OpenAICompModel`: default `24576`
+- `OpenAICompModel`: default `32768`
 - `AnthropicModel`: default `32768`
 
 ## `openai-*`
@@ -70,8 +70,8 @@ Optional environment variables:
 
 - `ANTHROPIC_BASE_URL`
 - `CODESCRIBE_ANTHROPIC_STREAMING`
-- `CODESCRIBE_ANTHROPIC_CACHE`
-- `CODESCRIBE_AGENT_REASONING`
+- `CODESCRIBE_PROMPT_CACHE`
+- `CODESCRIBE_MODEL_REASONING`
 
 Current behavior:
 
@@ -87,7 +87,7 @@ Current behavior:
 For `AnthropicModel`, reasoning can be enabled by either:
 
 - the CLI/API `reason=True`, or
-- `CODESCRIBE_AGENT_REASONING=1`
+- `CODESCRIBE_MODEL_REASONING=1`
 
 When enabled, the model is configured with:
 
