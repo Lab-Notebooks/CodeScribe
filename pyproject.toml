@@ -21,7 +21,6 @@ dependencies = [
     "alive-progress==3.1.4",
     "openai",
     "anthropic",
-    "matplotlib",
 ]
 
 [project.scripts]
