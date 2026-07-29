@@ -1,7 +1,0 @@
-[package]
-name = "scribe_rs"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-clap = { version = "4.3.0", features = ["derive"] }
