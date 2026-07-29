@@ -108,10 +108,10 @@ def prompt_translate(
                         if fsource:
                             fdest.write(fsource.group(1))
 
-                #lib.write_archive_toml(
+                # lib.write_archive_toml(
                 #    chat_template + [{"role": "assistant", "content": result}],
                 #    neural_model,
-                #)
+                # )
 
                 chat_template[-1]["content"] = cached_prompt
 
@@ -250,9 +250,9 @@ def prompt_generate(
                 f.write(content.strip() + "\n")
             print(f"Wrote {filename}")
 
-        #lib.write_archive_toml(
+        # lib.write_archive_toml(
         #    chat_template + [{"role": "assistant", "content": result}], neural_model
-        #)
+        # )
 
 
 def prompt_update(
@@ -349,9 +349,9 @@ def prompt_update(
                 f.write(content.strip() + "\n")
             print(f"Wrote {filename}")
 
-        #lib.write_archive_toml(
+        # lib.write_archive_toml(
         #    chat_template + [{"role": "assistant", "content": result}], neural_model
-        #)
+        # )
 
 
 def prompt_agent(

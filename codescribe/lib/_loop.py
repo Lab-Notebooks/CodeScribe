@@ -47,6 +47,7 @@ __all__ = [
 # Paths
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class LoopPaths:
     """Paths under `.codescribe/loop/` for a single shared run."""
@@ -55,8 +56,8 @@ class LoopPaths:
     metadata_dir: Path
     run_toml: Path
     state_toml: Path
-    author_toml: Path          # raw event log (overwritten each author phase)
-    review_output_toml: Path   # review agent's structured output (overwritten each review)
+    author_toml: Path  # raw event log (overwritten each author phase)
+    review_output_toml: Path  # review agent's structured output (overwritten each review)
 
 
 def get_loop_paths(workdir: Path) -> LoopPaths:
@@ -95,7 +96,9 @@ def write_state(path: Path, state: Dict[str, Any]) -> None:
         raise ValueError(f"state['loop_index'] must be an int, got {loop_index!r}")
     phase = state.get("phase")
     if phase not in _VALID_PHASES:
-        raise ValueError(f"state['phase'] must be one of {sorted(_VALID_PHASES)}, got {phase!r}")
+        raise ValueError(
+            f"state['phase'] must be one of {sorted(_VALID_PHASES)}, got {phase!r}"
+        )
     state["updated_at"] = lib.iso_utc_now()
     lib.atomic_write_toml(path, state)
 
@@ -115,6 +118,7 @@ def init_state(*, run_id: str, workdir: Path, task_file: Path) -> Dict[str, Any]
 # In-memory cross-loop state
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class LoopSummary:
     """Harness-computed summary of one author phase.
@@ -127,9 +131,11 @@ class LoopSummary:
     files_written: List[str] = field(default_factory=list)
     files_edited: List[str] = field(default_factory=list)
     files_read: List[str] = field(default_factory=list)
-    commands_run: List[str] = field(default_factory=list)   # "cmd → exit_code N"
+    commands_run: List[str] = field(default_factory=list)  # "cmd → exit_code N"
     errors: List[str] = field(default_factory=list)
-    rejected: List[str] = field(default_factory=list)        # "tool(args): reason" — attempted, never executed
+    rejected: List[str] = field(
+        default_factory=list
+    )  # "tool(args): reason" — attempted, never executed
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     total_cache_creation_tokens: int = 0
@@ -148,14 +154,18 @@ class PromptLoopRunner:
     reason: bool = False
 
     def __post_init__(self) -> None:
-        self.workdir_path = Path(self.workdir).resolve() if self.workdir else Path.cwd().resolve()
+        self.workdir_path = (
+            Path(self.workdir).resolve() if self.workdir else Path.cwd().resolve()
+        )
         self.task_path = ensure_within_workdir(Path(self.task_file), self.workdir_path)
         self.neural_model = lib.set_neural_model(self.model, reasoning=self.reason)  # type: ignore[attr-defined]
 
         self.run_id = lib.new_run_id()
         self.paths = get_loop_paths(self.workdir_path)
         self.task_rel = str(self.task_path.relative_to(self.workdir_path))
-        self.review_output_rel = str(self.paths.review_output_toml.relative_to(self.workdir_path))
+        self.review_output_rel = str(
+            self.paths.review_output_toml.relative_to(self.workdir_path)
+        )
         self.system = build_system_prompt(workdir=self.workdir_path)
 
         self.loop_summaries: List[LoopSummary] = []
@@ -171,7 +181,9 @@ class PromptLoopRunner:
         self.initialize_loop_state()
 
     def load_task_context(self) -> None:
-        self.chat_history, meta = lib.load_chat_template(self.task_path, return_meta=True)
+        self.chat_history, meta = lib.load_chat_template(
+            self.task_path, return_meta=True
+        )
         bash_allow = set((meta.get("tools") or {}).get("bash") or [])
         self.tools = lib.make_tools(self.workdir_path, bash_allow=bash_allow)
 
@@ -197,7 +209,9 @@ class PromptLoopRunner:
         lib.atomic_write_toml(self.paths.run_toml, self.run_toml_data)
 
     def initialize_loop_state(self) -> None:
-        self.state = init_state(run_id=self.run_id, workdir=self.workdir_path, task_file=self.task_path)
+        self.state = init_state(
+            run_id=self.run_id, workdir=self.workdir_path, task_file=self.task_path
+        )
         write_state(self.paths.state_toml, self.state)
 
     def update_state(self, *, loop_index: int, phase: str) -> None:
@@ -216,7 +230,9 @@ class PromptLoopRunner:
             self.task_mtime = current_mtime
 
     def persist_run_progress(self, loop_idx: int) -> None:
-        update_cumulative_tokens(self.run_toml_data, self.loop_summaries + self.review_summaries)
+        update_cumulative_tokens(
+            self.run_toml_data, self.loop_summaries + self.review_summaries
+        )
         self.run_toml_data["loops_completed"] = loop_idx
         lib.atomic_write_toml(self.paths.run_toml, self.run_toml_data)
         lib.write_loop_manifest(
@@ -229,7 +245,9 @@ class PromptLoopRunner:
     def build_author_logging(self) -> lib.ToolLogSink:
         author_log: lib.ToolLogSink = lib.ToolLogToml(path=str(self.paths.author_toml))
         if self.logging is not None:
-            extra_log = lib.ToolLogToml(path=str(self.logging) if str(self.logging) else None)
+            extra_log = lib.ToolLogToml(
+                path=str(self.logging) if str(self.logging) else None
+            )
             author_log = lib.MultiToolLogSink([author_log, extra_log])
         return author_log
 
@@ -272,7 +290,9 @@ class PromptLoopRunner:
         )
 
         phase_timer = lib.Timer()
-        author_result = author_agent.run(author_task, system=self.system, chat_history=self.chat_history)
+        author_result = author_agent.run(
+            author_task, system=self.system, chat_history=self.chat_history
+        )
         phase_duration_s = phase_timer.ms / 1000.0
         author_answer = author_result.final_text or ""
         loop_summary = loop_summary_from_result(loop_idx, author_result)
@@ -301,10 +321,23 @@ class PromptLoopRunner:
         return loop_summary, author_answer, extract_status(author_answer)
 
     def build_review_tools(self) -> List[lib.AgentTool]:
-        review_bash_allow = {"ls", "stat", "pwd", "find", "grep", "head", "tail", "which", "env", "rg"}
+        review_bash_allow = {
+            "ls",
+            "stat",
+            "pwd",
+            "find",
+            "grep",
+            "head",
+            "tail",
+            "which",
+            "env",
+            "rg",
+        }
         review_tools = [t for t in self.tools if t.name in ("read", "glob", "write")]
         review_tools.append(
-            lib.BashTool(cwd=self.workdir_path, bounded=True, allowed_commands=review_bash_allow)
+            lib.BashTool(
+                cwd=self.workdir_path, bounded=True, allowed_commands=review_bash_allow
+            )
         )
         return review_tools
 
@@ -332,7 +365,9 @@ class PromptLoopRunner:
             return True
         return False
 
-    def run_review_phase(self, loop_idx: int, loop_summary: LoopSummary, exec_answer: str) -> bool:
+    def run_review_phase(
+        self, loop_idx: int, loop_summary: LoopSummary, exec_answer: str
+    ) -> bool:
         if self.verbose:
             print(f"\n▶  loop {loop_idx} [review]")
 
@@ -471,6 +506,7 @@ def loop_summary_from_result(loop_index: int, result: "lib.RunResult") -> LoopSu
 # Prompt builders
 # ---------------------------------------------------------------------------
 
+
 def build_system_prompt(*, workdir: Path) -> str:
     return (
         "You are an autonomous coding agent specializing in test-driven development and repair.\n\n"
@@ -542,7 +578,9 @@ def format_loop_context(
         for item in pending_items[:5]:
             lines.append(f"  - {item}")
     else:
-        lines.append("No pending steps recorded — determine next action from the task file.")
+        lines.append(
+            "No pending steps recorded — determine next action from the task file."
+        )
 
     return "\n".join(lines)
 
@@ -586,8 +624,8 @@ def build_author_task(
         "are genuinely blocked. Do NOT implement just one item and defer the rest to a later\n"
         "loop — keep working until everything that can be done this session is done.\n\n"
         "Protocol:\n"
-        + orient_step +
-        "2. Write a short PLAN (3–7 bullets) covering everything you intend to complete now.\n"
+        + orient_step
+        + "2. Write a short PLAN (3–7 bullets) covering everything you intend to complete now.\n"
         "3. Execute the plan autonomously and to completion — do NOT ask for confirmation, and\n"
         "   do NOT stop after a single change while more work remains.\n"
         "4. Before each set of tool calls, write one or two sentences stating what you are about to do and why.\n"
@@ -631,8 +669,13 @@ def build_review_task(
         summary_lines.append("Errors:")
         for e in loop_summary.errors:
             summary_lines.append(f"  {e}")
-    if not (loop_summary.files_read or loop_summary.files_written or loop_summary.files_edited
-            or loop_summary.commands_run or loop_summary.errors):
+    if not (
+        loop_summary.files_read
+        or loop_summary.files_written
+        or loop_summary.files_edited
+        or loop_summary.commands_run
+        or loop_summary.errors
+    ):
         summary_lines.append("  (no verified actions)")
     verified_block = "\n".join(summary_lines)
 
@@ -657,7 +700,8 @@ def build_review_task(
         + (f"{rejected_block}\n\n" if rejected_block else "")
         + (
             f"\n[Author agent report — loop {loop_index}]\n\n{exec_answer}\n\n"
-            if exec_answer else ""
+            if exec_answer
+            else ""
         )
         + "Your job:\n"
         "1. Cross-reference the author report's claims against the verified actions above.\n"
@@ -668,13 +712,13 @@ def build_review_task(
         "2. Write your assessment to the review output file in TOML format:\n\n"
         "   ```toml\n"
         f"   loop = {loop_index}\n"
-        "   summary = \"One paragraph describing what actually happened.\"\n"
-        "   blocker = \"Main current blocker, or empty string if none.\"\n\n"
+        '   summary = "One paragraph describing what actually happened."\n'
+        '   blocker = "Main current blocker, or empty string if none."\n\n'
         "   [[pending]]\n"
-        "   item = \"First concrete next step\"\n"
+        '   item = "First concrete next step"\n'
         "   ```\n\n"
         "Rules:\n"
-        "- If tests passed and no errors are listed above, set blocker = \"\" and leave pending empty.\n"
+        '- If tests passed and no errors are listed above, set blocker = "" and leave pending empty.\n'
         "- pending items must be concrete and actionable (not 'continue working').\n"
         "- Limit to 5 pending items maximum.\n\n"
         "Finish with <final_answer> confirming you wrote the review output file.\n"
@@ -684,6 +728,7 @@ def build_review_task(
 # ---------------------------------------------------------------------------
 # Runner utilities
 # ---------------------------------------------------------------------------
+
 
 def ensure_within_workdir(path: Path, workdir: Path) -> Path:
     path = path.resolve()
@@ -725,7 +770,7 @@ def extract_status(final_text: str) -> Optional[str]:
     for line in (final_text or "").splitlines():
         s = line.strip().upper()
         if s.startswith("STATUS:"):
-            val = s[len("STATUS:"):].strip()
+            val = s[len("STATUS:") :].strip()
             if val.startswith("COMPLETE"):
                 return "COMPLETE"
             if val.startswith("INCOMPLETE"):
@@ -737,8 +782,12 @@ def update_cumulative_tokens(
     run_toml_data: Dict[str, Any], summaries: List[LoopSummary]
 ) -> None:
     """Roll up per-loop token totals into the run.toml record (in place)."""
-    run_toml_data["cumulative_input_tokens"] = sum(s.total_input_tokens for s in summaries)
-    run_toml_data["cumulative_output_tokens"] = sum(s.total_output_tokens for s in summaries)
+    run_toml_data["cumulative_input_tokens"] = sum(
+        s.total_input_tokens for s in summaries
+    )
+    run_toml_data["cumulative_output_tokens"] = sum(
+        s.total_output_tokens for s in summaries
+    )
     run_toml_data["cumulative_cache_creation_tokens"] = sum(
         s.total_cache_creation_tokens for s in summaries
     )

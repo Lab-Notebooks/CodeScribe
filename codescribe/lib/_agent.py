@@ -56,6 +56,7 @@ Rules:
 # Value objects
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class AgentPolicy:
     """Tunable execution-policy knobs for a run.
@@ -67,9 +68,11 @@ class AgentPolicy:
     max_tool_calls_total: int = 120
     max_calls_per_iteration: int = 10
     max_repeated_calls: int = 2
-    read_repeat_multiplier: int = 3          # reads get more repeats (paging / post-edit verify)
+    read_repeat_multiplier: int = (
+        3  # reads get more repeats (paging / post-edit verify)
+    )
     max_consecutive_error_iters: int = 3
-    max_history_chars: int = 8000            # cap a single tool output kept in message history
+    max_history_chars: int = 8000  # cap a single tool output kept in message history
 
 
 @dataclass
@@ -126,7 +129,7 @@ class ToolResult:
     name: str
     args: Dict[str, Any]
     ok: bool
-    output_preview: str   # first ~500 chars of the raw output
+    output_preview: str  # first ~500 chars of the raw output
 
 
 @dataclass
@@ -140,7 +143,7 @@ class RejectedCall:
 
     name: str
     args: Dict[str, Any]
-    reason: str   # "repeat_blocked" | "bad_json" | "iteration_skip"
+    reason: str  # "repeat_blocked" | "bad_json" | "iteration_skip"
 
 
 @dataclass
@@ -167,7 +170,7 @@ class RunResult:
     """
 
     final_text: Optional[str]
-    stop_reason: str                       # "final_text" | "max_iterations" | "tool_budget"
+    stop_reason: str  # "final_text" | "max_iterations" | "tool_budget"
     usage: TokenUsage
     iterations: int
     tool_results: List[ToolResult] = field(default_factory=list)
@@ -202,6 +205,7 @@ class RunState:
 # Diagnostics observer (separates console presentation from control flow)
 # ---------------------------------------------------------------------------
 
+
 class RunObserver:
     """No-op observer base. Override to render run progress."""
 
@@ -209,11 +213,22 @@ class RunObserver:
     def model_call(self, iteration: int) -> Iterator[None]:
         yield
 
-    def on_run_start(self, run_id: str, max_iterations: int) -> None: ...
-    def on_model_response(self, *, iteration: int, usage: "TokenUsage", reasoning: str) -> None: ...
-    def on_tool_start(self, name: str, args_preview: str) -> None: ...
-    def on_tool_end(self, name: str, output: str) -> None: ...
-    def on_run_end(self, result: "RunResult") -> None: ...
+    def on_run_start(self, run_id: str, max_iterations: int) -> None:
+        ...
+
+    def on_model_response(
+        self, *, iteration: int, usage: "TokenUsage", reasoning: str
+    ) -> None:
+        ...
+
+    def on_tool_start(self, name: str, args_preview: str) -> None:
+        ...
+
+    def on_tool_end(self, name: str, output: str) -> None:
+        ...
+
+    def on_run_end(self, result: "RunResult") -> None:
+        ...
 
 
 class ConsoleObserver(RunObserver):
@@ -236,7 +251,9 @@ class ConsoleObserver(RunObserver):
     @staticmethod
     def cache_part(usage: "TokenUsage") -> str:
         if usage.cache_write or usage.cache_read:
-            return f"  cache_write {usage.cache_write:,}  cache_read {usage.cache_read:,}"
+            return (
+                f"  cache_write {usage.cache_write:,}  cache_read {usage.cache_read:,}"
+            )
         return ""
 
     @staticmethod
@@ -245,7 +262,7 @@ class ConsoleObserver(RunObserver):
         use_ansi = getattr(sys.stdout, "isatty", lambda: False)()
         dim = "\033[2m" if use_ansi else ""
         reset = "\033[0m" if use_ansi else ""
-        for line in (text.splitlines() or [""]):
+        for line in text.splitlines() or [""]:
             print(f"    │ {dim}{line}{reset}")
 
     @staticmethod
@@ -255,7 +272,9 @@ class ConsoleObserver(RunObserver):
         first = (summary.splitlines() or ["(empty)"])[0].strip()
         return (first[:70] + "…") if len(first) > 70 else first
 
-    def on_model_response(self, *, iteration: int, usage: "TokenUsage", reasoning: str) -> None:
+    def on_model_response(
+        self, *, iteration: int, usage: "TokenUsage", reasoning: str
+    ) -> None:
         if reasoning:
             self.print_reasoning_block(reasoning)
         rsn_part = f"  rsn {usage.reasoning:,}" if usage.reasoning else ""
@@ -283,6 +302,7 @@ class ConsoleObserver(RunObserver):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def is_error_output(output: str) -> bool:
     return (output or "").lstrip().startswith("Error:")
@@ -578,7 +598,11 @@ class Agent:
         consumers (e.g. the review agent) can flag claims about them.
         """
         state.rejected_calls.append(
-            RejectedCall(name=name, args=dict(args) if isinstance(args, dict) else {}, reason=reason)
+            RejectedCall(
+                name=name,
+                args=dict(args) if isinstance(args, dict) else {},
+                reason=reason,
+            )
         )
         self.emit(
             {
@@ -639,45 +663,24 @@ class Agent:
 
     @staticmethod
     def upsert_workspace_context(messages: List[Dict[str, Any]], block: str) -> None:
-        """Append or update WORKSPACE CONTEXT on the last user message.
+        """Append or update a dedicated trailing WORKSPACE CONTEXT user message.
 
         Keeping this out of the system prompt lets the static system message stay
         identical across every iteration, which is required for Anthropic prompt
-        caching to hit.  Attaching the block to the last user message (string or
-        tool-result blocks) is semantically equivalent and does not break turn
-        alternation rules.
+        caching to hit. Keeping it in a dedicated trailing user message also
+        avoids mutating earlier user/tool content, which helps OpenAI-compatible
+        prompt caching preserve a stable prefix.
         """
         _MARKER = "WORKSPACE CONTEXT"
 
-        for i in range(len(messages) - 1, -1, -1):
-            m = messages[i]
-            if m.get("role") != "user":
-                continue
-            c = m.get("content", "")
+        if messages:
+            last = messages[-1]
+            if last.get("role") == "user":
+                content = last.get("content", "")
+                if isinstance(content, str) and content.startswith(_MARKER):
+                    messages[-1] = {"role": "user", "content": block}
+                    return
 
-            if isinstance(c, str):
-                # Strip any prior workspace block then append the fresh one.
-                tag = "\n\n" + _MARKER
-                idx = c.find(tag)
-                base = c[:idx] if idx >= 0 else (c if not c.startswith(_MARKER) else "")
-                messages[i] = dict(m, content=(base + "\n\n" + block).lstrip())
-                return
-
-            if isinstance(c, list):
-                # Drop any previous workspace text block and append the new one.
-                kept = [
-                    b for b in c
-                    if not (
-                        isinstance(b, dict)
-                        and b.get("type") == "text"
-                        and b.get("text", "").startswith(_MARKER)
-                    )
-                ]
-                kept.append({"type": "text", "text": block})
-                messages[i] = dict(m, content=kept)
-                return
-
-        # No user message found yet — prepend as the first user message.
         messages.append({"role": "user", "content": block})
 
     def handle_tool_calls(
@@ -734,14 +737,20 @@ class Agent:
                 )
                 self.record_tool_result(state, call_name, call_args, hint)
                 self.record_rejected_call(
-                    state, call_name, call_args, "repeat_blocked",
-                    run_id=run_id, iteration=iteration,
+                    state,
+                    call_name,
+                    call_args,
+                    "repeat_blocked",
+                    run_id=run_id,
+                    iteration=iteration,
                 )
                 outputs.append(hint)
                 executed_calls.append(call)
                 continue
 
-            self._observer.on_tool_start(call_name, self.format_args(call_name, call_args))
+            self._observer.on_tool_start(
+                call_name, self.format_args(call_name, call_args)
+            )
 
             # If the provider emitted invalid JSON arguments, surface that clearly.
             if raw_args_err:
@@ -753,12 +762,19 @@ class Agent:
                     "Fix: emit a tool call with a JSON object matching the tool schema."
                 )
                 self.record_rejected_call(
-                    state, call_name, call_args, "bad_json",
-                    run_id=run_id, iteration=iteration,
+                    state,
+                    call_name,
+                    call_args,
+                    "bad_json",
+                    run_id=run_id,
+                    iteration=iteration,
                 )
             else:
                 output = self.execute_tool(
-                    call_name, call_args, run_id=run_id, iteration=iteration,
+                    call_name,
+                    call_args,
+                    run_id=run_id,
+                    iteration=iteration,
                     model_text=model_text or None,
                 )
                 # Count only real tool executions against the total budget, and
@@ -782,7 +798,10 @@ class Agent:
             # Cap very large outputs in the message history to prevent the context
             # window from growing unboundedly across iterations. Errors and small
             # outputs are always passed in full.
-            if not is_error_output(output) and len(output) > self.policy.max_history_chars:
+            if (
+                not is_error_output(output)
+                and len(output) > self.policy.max_history_chars
+            ):
                 msg_output = (
                     output[: self.policy.max_history_chars]
                     + f"\n…[output truncated: {len(output) - self.policy.max_history_chars} chars omitted."
@@ -796,11 +815,15 @@ class Agent:
             self._observer.on_tool_end(call_name, output)
 
         if skipped > 0:
-            for call in tool_calls[self.policy.max_calls_per_iteration:]:
+            for call in tool_calls[self.policy.max_calls_per_iteration :]:
                 call_args = call.get("arguments", {})
                 self.record_rejected_call(
-                    state, call.get("name", ""), call_args, "iteration_skip",
-                    run_id=run_id, iteration=iteration,
+                    state,
+                    call.get("name", ""),
+                    call_args,
+                    "iteration_skip",
+                    run_id=run_id,
+                    iteration=iteration,
                 )
             outputs.append(
                 f"Note: {skipped} tool call(s) were skipped this iteration due to "
@@ -961,7 +984,9 @@ class Agent:
 
             if not empty_reply_nudged:
                 empty_reply_nudged = True
-                if any("JSON" in e or "not valid JSON" in e for e in state.recent_errors):
+                if any(
+                    "JSON" in e or "not valid JSON" in e for e in state.recent_errors
+                ):
                     nudge = (
                         "Your last tool call could not be parsed because the arguments "
                         "were not valid JSON. Please re-emit the tool call with a properly "

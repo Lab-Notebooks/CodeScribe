@@ -64,7 +64,9 @@ class OpenAICompModel:
 
             self.pipeline = openai.OpenAI(api_key=self.apikey, base_url=self.baseurl)
         else:
-            raise ValueError(f"Unknown OpenAI profile '{profile}'. Use 'openai' or 'oaic'.")
+            raise ValueError(
+                f"Unknown OpenAI profile '{profile}'. Use 'openai' or 'oaic'."
+            )
 
         self.last_usage = None
 
@@ -77,7 +79,9 @@ class OpenAICompModel:
             **self._request_kwargs(messages=chat_template)
         )
         self.last_usage = _normalize_openai_usage(getattr(response, "usage", None))
-        normalized = self._normalize_message(response.choices[0].message, self.last_usage)
+        normalized = self._normalize_message(
+            response.choices[0].message, self.last_usage
+        )
         return "\n\n".join(
             part for part in (normalized["reasoning"], normalized["text"]) if part
         )
@@ -112,9 +116,14 @@ class OpenAICompModel:
 
         assistant_content = None
         if reasoning_blocks:
-            assistant_content = "\n\n".join(
-                block.get("text", "") for block in reasoning_blocks if block.get("text")
-            ) or None
+            assistant_content = (
+                "\n\n".join(
+                    block.get("text", "")
+                    for block in reasoning_blocks
+                    if block.get("text")
+                )
+                or None
+            )
 
         messages: List[Dict[str, Any]] = [
             {
@@ -138,6 +147,9 @@ class OpenAICompModel:
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
+        if self.prompt_caching and messages:
+            messages = list(messages)
+
         kwargs: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -180,14 +192,18 @@ class OpenAICompModel:
                     btext = block.get("text") or block.get("summary")
                 else:
                     btype = getattr(block, "type", None)
-                    btext = getattr(block, "text", None) or getattr(block, "summary", None)
+                    btext = getattr(block, "text", None) or getattr(
+                        block, "summary", None
+                    )
                 if btype == "text" and btext:
                     text = f"{text}{btext}"
                 elif btype in ("reasoning", "summary_text") and btext:
                     parts.append(btext)
 
         reasoning_text = "\n\n".join(
-            p for i, p in enumerate((p.strip() for p in parts if p)) if p and p not in parts[:i]
+            p
+            for i, p in enumerate((p.strip() for p in parts if p))
+            if p and p not in parts[:i]
         )
 
         tool_calls = []
@@ -462,7 +478,9 @@ class AnthropicModel:
                                 messages[i] = dict(
                                     m,
                                     content=c[:-1]
-                                    + [{**last, "cache_control": {"type": "ephemeral"}}],
+                                    + [
+                                        {**last, "cache_control": {"type": "ephemeral"}}
+                                    ],
                                 )
                         break
 
@@ -556,7 +574,9 @@ def _normalize_openai_usage(usage: Any) -> Any:
     return normalized or None
 
 
-def _merge_stream_usage(start_usage: Any, delta_output_tokens: int) -> Optional[Dict[str, Any]]:
+def _merge_stream_usage(
+    start_usage: Any, delta_output_tokens: int
+) -> Optional[Dict[str, Any]]:
     """Build a normalized usage dict from Anthropic streaming event data.
 
     message_start carries input_tokens + cache fields; message_delta carries
@@ -649,15 +669,15 @@ def set_neural_model(model: str, reasoning: bool = False) -> Model:
     """Instantiate and return the appropriate LLM based on the model string."""
     if model.lower().startswith("openai-"):
         return OpenAICompModel(
-            model[len("openai-"):], profile="openai", reasoning=reasoning
+            model[len("openai-") :], profile="openai", reasoning=reasoning
         )
 
     if model.lower().startswith("anthropic-"):
-        return AnthropicModel(model[len("anthropic-"):], reasoning=reasoning)
+        return AnthropicModel(model[len("anthropic-") :], reasoning=reasoning)
 
     if model.lower().startswith("oaic-"):
         return OpenAICompModel(
-            model[len("oaic-"):], profile="oaic", reasoning=reasoning
+            model[len("oaic-") :], profile="oaic", reasoning=reasoning
         )
 
     raise ValueError(

@@ -37,7 +37,10 @@ __all__ = [
     "Timer",
 ]
 
-def write_archive_toml(chat_entries: List[Dict[str, str]], neural_model: object) -> None:
+
+def write_archive_toml(
+    chat_entries: List[Dict[str, str]], neural_model: object
+) -> None:
     """Write a chat archive TOML file under `.codescribe/chat/`.
 
     Folder structure: YYYY/MM/DD/timestamp_sha.toml
@@ -113,6 +116,7 @@ def read_toml(path: Path) -> Dict[str, Any]:
 # TOML event log (replaces JSONL)
 # ---------------------------------------------------------------------------
 
+
 def _toml_val(v: Any) -> Optional[str]:
     """Serialize a value to its TOML literal representation.
 
@@ -135,9 +139,9 @@ def _toml_val(v: Any) -> Optional[str]:
             # Fall back to escaped basic string
             esc = (
                 v.replace("\\", "\\\\")
-                 .replace('"', '\\"')
-                 .replace("\n", "\\n")
-                 .replace("\r", "\\r")
+                .replace('"', '\\"')
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
             )
             return f'"{esc}"'
         esc = v.replace("\\", "\\\\").replace('"', '\\"').replace("\t", "\\t")
