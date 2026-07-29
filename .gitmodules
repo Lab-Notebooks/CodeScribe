@@ -2,7 +2,7 @@
 	path = tutorial
 	url = git@github.com:akashdhruv/codescribe-tutorial.git
     branch = main
-[submodule "codescribe.rs.dev"]
-	path = codescribe.rs.dev
+[submodule "csloop.rs.dev"]
+	path = csloop.rs.dev
 	url = git@github.com:Lab-Notebooks/CSLoop.git
 	branch = main
