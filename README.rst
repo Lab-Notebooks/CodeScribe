@@ -151,6 +151,9 @@ To run a multi-session bounded loop over a task file:
 See `docs/loop.md <docs/loop.md>`__ for the task file format and
 bounded-tool policy.
 
+If you only need the bounded loop and not the rest of Codescribe's
+tooling, see `CSLoop`_ below for a minimalist standalone CLI.
+
 *******
  Usage
 *******
@@ -485,6 +488,30 @@ This means commands such as the following will fail in bounded mode:
 These diagnostics are expected and useful: they show exactly how the
 bounded tool layer constrains an agent session. See ``docs/loop.md`` for
 the full bounded-mode policy and how to configure ``--workdir``.
+
+*********
+ CSLoop
+*********
+
+`CSLoop <https://github.com/Lab-Notebooks/csloop>`__ is a standalone
+Rust port of ``code-scribe loop``, distributed as a single compiled
+binary. It is a minimalist alternative for projects that only want the
+bounded author/review loop and do not need Codescribe's broader
+orchestration — agent mode, translation, generation, and inspection.
+
+.. code:: bash
+
+   cargo install --git https://github.com/Lab-Notebooks/csloop
+   export ANTHROPIC_API_KEY="sk-ant-..."
+   csloop task.toml -m claude-sonnet-4-6 --verbose
+
+CSLoop speaks to Anthropic models only and mirrors the same task-file
+format, ``--agent-loops``/``--agent-iterations`` bounds, and
+``--verbose``/``--log`` diagnostics as ``code-scribe loop``, writing its
+artifacts under ``.csloop/loop/`` instead of ``.codescribe/loop/``. See
+the `CSLoop README <https://github.com/Lab-Notebooks/csloop#readme>`__
+for the full flag reference and install options (including installing
+over SSH).
 
 ****************
  Code of Conduct
