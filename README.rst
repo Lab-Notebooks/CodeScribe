@@ -490,10 +490,10 @@ bounded tool layer constrains an agent session. See ``docs/loop.md`` for
 the full bounded-mode policy and how to configure ``--workdir``.
 
 *********
- CSLoop
+ CS-Loop
 *********
 
-`CSLoop <https://github.com/Lab-Notebooks/csloop>`__ is a standalone
+`CS-Loop <https://github.com/Lab-Notebooks/CS-Loop>`__ is a standalone
 Rust port of ``code-scribe loop``, distributed as a single compiled
 binary. It is a minimalist alternative for projects that only want the
 bounded author/review loop and do not need Codescribe's broader
@@ -501,11 +501,11 @@ orchestration — agent mode, translation, generation, and inspection.
 
 .. code:: bash
 
-   cargo install --git https://github.com/Lab-Notebooks/csloop
+   cargo install --git https://github.com/Lab-Notebooks/CS-Loop
    export ANTHROPIC_API_KEY="sk-ant-..."
    csloop task.toml -m claude-sonnet-4-6 --verbose
 
-CSLoop speaks to Anthropic models only and mirrors the same task-file
+CS-Loop speaks to Anthropic models only and mirrors the same task-file
 format, ``--agent-loops``/``--agent-iterations`` bounds, and
 ``--verbose``/``--log`` diagnostics as ``code-scribe loop``, writing its
 artifacts under ``.csloop/loop/`` instead of ``.codescribe/loop/``. See
