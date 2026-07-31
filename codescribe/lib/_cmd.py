@@ -242,13 +242,19 @@ def prompt_generate(
         result = neural_model.chat(chat_template)
 
         pattern = re.compile(r"<([^>]+)>\s*(.*?)\s*</\1>", re.DOTALL)
+        cwd_root = Path.cwd().resolve()
 
         for match in pattern.finditer(result):
             filename, content = match.groups()
-            os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
-            with open(filename, "w") as f:
+            try:
+                target = lib.AgentTool.resolve_within_root(cwd_root, filename)
+            except ValueError as exc:
+                print(f"Skipped {filename!r}: {exc}")
+                continue
+            os.makedirs(target.parent, exist_ok=True)
+            with open(target, "w") as f:
                 f.write(content.strip() + "\n")
-            print(f"Wrote {filename}")
+            print(f"Wrote {target}")
 
         # lib.write_archive_toml(
         #    chat_template + [{"role": "assistant", "content": result}], neural_model
@@ -341,13 +347,23 @@ def prompt_update(
         result = neural_model.chat(chat_template)
 
         pattern = re.compile(r"<([^>]+)>\s*(.*?)\s*</\1>", re.DOTALL)
+        cwd_root = Path.cwd().resolve()
+        allowed_targets = {Path(f).resolve() for f in filelist}
 
         for match in pattern.finditer(result):
             filename, content = match.groups()
-            os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
-            with open(filename, "w") as f:
+            try:
+                target = lib.AgentTool.resolve_within_root(cwd_root, filename)
+            except ValueError as exc:
+                print(f"Skipped {filename!r}: {exc}")
+                continue
+            if target not in allowed_targets:
+                print(f"Skipped {filename!r}: not in the requested file list")
+                continue
+            os.makedirs(target.parent, exist_ok=True)
+            with open(target, "w") as f:
                 f.write(content.strip() + "\n")
-            print(f"Wrote {filename}")
+            print(f"Wrote {target}")
 
         # lib.write_archive_toml(
         #    chat_template + [{"role": "assistant", "content": result}], neural_model

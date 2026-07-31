@@ -25,9 +25,28 @@ def ensure_loop_metadata_dir(loop_dir: Path) -> Path:
     return path
 
 
+_MAX_FIELD_CHARS = 500
+
+
+def _cap_strings(value: Any, limit: int = _MAX_FIELD_CHARS) -> Any:
+    """Recursively truncate long strings (e.g. full file contents in tool args)."""
+    if isinstance(value, str):
+        if len(value) > limit:
+            return value[:limit] + f"... [truncated, {len(value)} chars total]"
+        return value
+    if isinstance(value, dict):
+        return {k: _cap_strings(v, limit) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_cap_strings(v, limit) for v in value]
+    return value
+
+
 def _plain(value: Any) -> Any:
     if is_dataclass(value):
-        return asdict(value)
+        data = asdict(value)
+        if "args" in data:
+            data["args"] = _cap_strings(data["args"])
+        return data
     return value
 
 

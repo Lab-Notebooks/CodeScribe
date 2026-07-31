@@ -185,7 +185,11 @@ class PromptLoopRunner:
             self.task_path, return_meta=True
         )
         bash_allow = set((meta.get("tools") or {}).get("bash") or [])
-        self.tools = lib.make_tools(self.workdir_path, bash_allow=bash_allow)
+        self.tools = lib.make_tools(
+            self.workdir_path,
+            bash_allow=bash_allow,
+            protected_paths={self.task_path.resolve()},
+        )
 
     def initialize_paths(self) -> None:
         os.makedirs(self.paths.run_dir, exist_ok=True)
@@ -221,12 +225,18 @@ class PromptLoopRunner:
         write_state(self.paths.state_toml, self.state)
 
     def reload_task_context_if_needed(self) -> None:
+        # Only the task content (chat_history) is refreshed here. The bash
+        # allowlist / tool policy is fixed once in load_task_context() at
+        # construction time and must never be re-derived mid-run: the task
+        # file lives inside the agent's own writable root, so re-reading its
+        # [tools].bash on every edit would let the agent grant itself new
+        # bash commands by rewriting its own task file.
         try:
             current_mtime = self.task_path.stat().st_mtime
         except OSError:
             current_mtime = 0.0
         if current_mtime != self.task_mtime:
-            self.load_task_context()
+            self.chat_history = lib.load_chat_template(self.task_path)
             self.task_mtime = current_mtime
 
     def persist_run_progress(self, loop_idx: int) -> None:
@@ -336,7 +346,10 @@ class PromptLoopRunner:
         review_tools = [t for t in self.tools if t.name in ("read", "glob", "write")]
         review_tools.append(
             lib.BashTool(
-                cwd=self.workdir_path, bounded=True, allowed_commands=review_bash_allow
+                cwd=self.workdir_path,
+                bounded=True,
+                allowed_commands=review_bash_allow,
+                protected_paths={self.task_path.resolve()},
             )
         )
         return review_tools
@@ -757,8 +770,14 @@ def extract_pending_items(final_text: str) -> List[str]:
                 break
             if stripped.startswith("-") or stripped.startswith("*"):
                 items.append(stripped.lstrip("-* ").strip())
-            elif stripped[0].isdigit() and stripped[1:3] in (". ", ") "):
-                items.append(stripped[2:].strip() if len(stripped) > 2 else stripped)
+            else:
+                digit_count = 0
+                while digit_count < len(stripped) and stripped[digit_count].isdigit():
+                    digit_count += 1
+                if digit_count > 0:
+                    rest = stripped[digit_count:]
+                    if rest.startswith(". ") or rest.startswith(") "):
+                        items.append(rest[2:].strip())
     return items[:5]
 
 
