@@ -107,18 +107,42 @@ Purpose:
 
 Current behavior:
 
+- Takes either a `task` string or a `task_file`. The two are mutually
+  exclusive and exactly one is required.
 - Constructs the model with `set_neural_model(model, reasoning=reason)`.
 - Optionally enables TOML event logging via `ToolLogToml`.
-- Uses `lib.make_tools(Path.cwd().resolve())`.
-- Runs `Agent(...).run(task)` and returns `str(result)`.
+- Uses `lib.make_tools(root, bash_allow=..., protected_paths=...)`, where
+  `root` is `workdir` or the current working directory.
+- Runs `Agent(...).run(task, chat_history=...)` and returns `str(result)`.
+
+Task file handling (`load_agent_task_file`):
+
+- The file must live inside the bounded root; otherwise `ensure_within_workdir`
+  raises.
+- It is read with `load_chat_template(..., return_meta=True)` — the same loader
+  the loop command uses.
+- The parsed chat template becomes the agent's prior conversation.
+- The `[tools] bash = [...]` section extends the bounded bash allowlist.
+- The file itself becomes a protected path, so `write`, `edit`, and `bash`
+  may not target it.
+- The task string passed to the agent is then built by `build_agent_task(...)`,
+  which points at the task file and tells the agent the specification is
+  already in context.
 
 Important correction:
 
 - The current implementation uses the bounded toolset rooted at the current
   working directory. It is not an unbounded filesystem agent.
 
+CLI:
+
+- `TASK` is either a task string or a path to a TOML task file. A path to an
+  existing file is treated as a task file; a `.toml` argument that does not
+  exist is rejected.
+
 CLI flags:
 
+- `--workdir`
 - `--agent-iterations / -niter`
 - `--verbose / -v`
 - `--log`

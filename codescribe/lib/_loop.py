@@ -40,6 +40,7 @@ __all__ = [
     "build_system_prompt",
     "build_author_task",
     "build_review_task",
+    "ensure_within_workdir",
     "prompt_loop",
 ]
 

@@ -29,6 +29,26 @@ def _to_paths(values: Iterable[Union[str, Path]]) -> List[Path]:
     return [Path(value) for value in values]
 
 
+def _split_task_argument(task: str) -> tuple:
+    """Resolve the TASK argument into either a task string or a task file.
+
+    An argument naming an existing file is treated as a TOML task file; anything
+    else is treated as a natural language task string.
+    """
+    candidate = Path(task)
+
+    if candidate.is_file():
+        return "", candidate
+
+    if candidate.suffix == ".toml":
+        raise click.UsageError(f"Task file '{task}' does not exist")
+
+    if not task.strip():
+        raise click.UsageError("Please provide a task string or a task file")
+
+    return task, None
+
+
 def _resolve_logging(log_enabled: bool, log_path: Optional[str]) -> Optional[str]:
     if log_path is not None:
         return log_path
@@ -273,6 +293,12 @@ def format(seed_prompt_list: List[Path]) -> None:
     help="Gen AI model name or path",
 )
 @click.option(
+    "--workdir",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True),
+    default=None,
+    help="Working directory bound for the agent; defaults to the current directory",
+)
+@click.option(
     "--agent-iterations",
     "-niter",
     default=20,
@@ -312,6 +338,7 @@ def format(seed_prompt_list: List[Path]) -> None:
 def agent(
     task: str,
     model: Union[str, Path],
+    workdir: Union[str, None],
     agent_iterations: int,
     verbose: bool,
     log_enabled: bool,
@@ -328,14 +355,24 @@ def agent(
     iterative tool-call loop until the task is complete.
     Available tools: read, bash, edit, write
     \b
+
+    \b
+    TASK is either a natural language task string, or the path
+    to a TOML task file in the same format used by the 'loop'
+    command. The two forms are mutually exclusive
+    \b
     """
+    task_string, task_file = _split_task_argument(task)
+
     result = api.agent(
-        task,
+        task_string,
         _require_model(model),
         agent_iterations=agent_iterations,
         verbose=verbose,
         logging=_resolve_logging(log_enabled, log_path),
         reason=reason,
+        task_file=task_file,
+        workdir=Path(workdir) if workdir else None,
     )
     click.echo(result)
 

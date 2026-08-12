@@ -106,16 +106,31 @@ def format(seed_prompt_list: List[Path]) -> None:
 
 
 def agent(
-    task: str,
-    model: Union[Path, str],
+    task: str = "",
+    model: Union[Path, str] = "",
     agent_iterations: int = 20,
     verbose: bool = False,
     logging: Union[Path, str, None] = None,
     reason: bool = False,
+    task_file: Union[Path, str, None] = None,
+    workdir: Union[Path, None] = None,
 ) -> str:
     """
     API command for running the agentic loop on a task
+
+    'task' and 'task_file' are mutually exclusive; exactly one is required.
+    A task file is a TOML chat template read with the same loader the loop
+    command uses.
     """
+    if task and (task_file is not None):
+        raise ValueError("Please provide either the 'task' or 'task_file', not both")
+
+    if (not task) and (task_file is None):
+        raise ValueError("Please provide either the 'task' or 'task_file'")
+
+    if not model:
+        raise ValueError("Please provide the 'model'")
+
     return lib.prompt_agent(
         task,
         model=model,
@@ -123,6 +138,8 @@ def agent(
         verbose=verbose,
         logging=logging,
         reason=reason,
+        task_file=task_file,
+        workdir=workdir,
     )
 
 

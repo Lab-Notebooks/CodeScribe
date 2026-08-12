@@ -142,6 +142,12 @@ The agent uses the ``write`` tool to create ``hello.py`` and emits a
 ``<final_answer>`` when done. With ``--verbose`` you see each tool call
 and token usage as it runs.
 
+The same command accepts a TOML task file instead of a task string:
+
+.. code:: bash
+
+   code-scribe agent task.toml -m anthropic-claude-sonnet-4-6 --verbose
+
 To run a multi-session bounded loop over a task file:
 
 .. code:: bash
@@ -277,13 +283,19 @@ Following is a brief overview of different commands:
    Update files from a natural-language prompt while using additional
    files as read-only references.
 
-#. ``code-scribe agent "<task>" -m <model_name>``: Run a
-   standalone coding agent that can iteratively use ``read``, ``glob``,
-   ``bash``, ``edit``, and ``write`` tools until it reaches a final
-   answer.
+#. ``code-scribe agent "<task>" -m <model_name>`` or ``code-scribe agent
+   <task_file> -m <model_name>``: Run a standalone coding agent that can
+   iteratively use ``read``, ``glob``, ``bash``, ``edit``, and ``write``
+   tools until it reaches a final answer. The argument is either a task
+   string or the path to a TOML task file in the same format used by
+   ``loop``; the two forms are mutually exclusive. A task file is loaded
+   as prior conversation, is protected from edits, and may extend the
+   bounded bash allowlist through its ``[tools]`` section.
 
    Key flags:
 
+   -  ``--workdir DIR``: root directory the agent is bounded to
+      (default: the current directory).
    -  ``--verbose`` / ``-v``: stream per-iteration token usage and tool
       calls to stdout.
    -  ``--log`` / ``--log-path PATH``: write TOML diagnostics to disk.

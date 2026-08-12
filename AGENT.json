@@ -67,11 +67,12 @@
         }
       }, 
       {
-        "bounded": false, 
-        "command": "agent", 
-        "description": "Single agent session with unbounded tools (use with care).", 
+        "bounded": false,
+        "command": "agent",
+        "description": "Single agent session with unbounded tools (use with care). The TASK argument is either a task string or a path to a TOML task file in the same format as loop; the two forms are mutually exclusive. A task file is loaded as prior conversation, is protected from write/edit/bash, and may extend the bash allowlist through its [tools] section.",
         "options": {
-          "--reason": "Enable adaptive thinking (Anthropic models only; ignored for other backends)", 
+          "--workdir DIR": "Root directory the agent is bounded to (default: cwd)",
+          "--reason": "Enable adaptive thinking (Anthropic models only; ignored for other backends)",
           "--log": "Write TOML diagnostic events to the default path: .codescribe/logs/toolusage.toml", 
           "--agent-iterations/-niter N": "Maximum tool-call iterations (default: 20)", 
           "--log-path PATH": "Write TOML diagnostic events to PATH (implies --log)", 
