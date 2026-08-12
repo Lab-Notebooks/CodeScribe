@@ -547,7 +547,7 @@ class Agent:
                             "iteration": iteration,
                             "tool": name,
                             "args": args,
-                            "model_reasoning": model_text or None,
+                            "model_text": model_text or None,
                         }
                     )
 
