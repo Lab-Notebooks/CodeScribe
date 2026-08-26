@@ -335,7 +335,7 @@ def format(seed_prompt_list: List[Path]) -> None:
     is_flag=True,
     help=(
         "Enable extended reasoning (adaptive thinking on Anthropic models, "
-        "high reasoning effort on OpenAI Responses API models)."
+        "high reasoning effort on OpenAI-compatible models)."
     ),
 )
 def agent(
@@ -439,7 +439,7 @@ def agent(
     is_flag=True,
     help=(
         "Enable extended reasoning (adaptive thinking on Anthropic models, "
-        "high reasoning effort on OpenAI Responses API models)."
+        "high reasoning effort on OpenAI-compatible models)."
     ),
 )
 def loop(
