@@ -333,7 +333,10 @@ def format(seed_prompt_list: List[Path]) -> None:
     "--reason",
     "reason",
     is_flag=True,
-    help="Enable adaptive thinking (Anthropic models only; ignored for other backends).",
+    help=(
+        "Enable extended reasoning (adaptive thinking on Anthropic models, "
+        "high reasoning effort on OpenAI-compatible models)."
+    ),
 )
 def agent(
     task: str,
@@ -434,7 +437,10 @@ def agent(
     "--reason",
     "reason",
     is_flag=True,
-    help="Enable adaptive thinking (Anthropic models only; ignored for other backends).",
+    help=(
+        "Enable extended reasoning (adaptive thinking on Anthropic models, "
+        "high reasoning effort on OpenAI-compatible models)."
+    ),
 )
 def loop(
     task_file: Path,

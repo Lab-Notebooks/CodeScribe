@@ -19,10 +19,6 @@ __all__ = [
 
 class OpenAICompModel:
     outputs = 1
-    # Provider "max_tokens" (Chat Completions style) is the maximum number of
-    # tokens the model may generate for the reply (i.e., output tokens).
-    # Match Anthropic default to allow equally large reasoning / planning replies.
-    max_tokens = int(os.getenv("CODESCRIBE_MAX_TOKENS", "32768"))
 
     def __init__(
         self,
@@ -34,6 +30,10 @@ class OpenAICompModel:
 
         self.model = model
         self.profile = profile
+        # Max tokens the model may generate per reply (output tokens only).
+        # Read per instance, not at class level, so CODESCRIBE_MAX_TOKENS
+        # applies whenever the model is constructed.
+        self.max_tokens = int(os.getenv("CODESCRIBE_MAX_TOKENS", "32768"))
         # Reasoning, when enabled, always runs at high effort with a summary.
         self.reasoning_effort: Optional[str] = "high" if reasoning else None
         self.reasoning_summary: Optional[str] = "auto" if reasoning else None
@@ -169,10 +169,19 @@ class OpenAICompModel:
     def _stream_chat_completion(
         self, kwargs: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
+        # include_usage adds a final chunk carrying token counts. Strict
+        # OpenAI-compatible servers reject the field, so retry without it
+        # before giving up on streaming.
+        streaming = {**kwargs, "stream": True}
         try:
-            stream = self.pipeline.chat.completions.create(**{**kwargs, "stream": True})
+            stream = self.pipeline.chat.completions.create(
+                **streaming, stream_options={"include_usage": True}
+            )
         except Exception:
-            return None
+            try:
+                stream = self.pipeline.chat.completions.create(**streaming)
+            except Exception:
+                return None
 
         text_parts: List[str] = []
         reasoning_parts: List[str] = []
