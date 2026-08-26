@@ -19,8 +19,8 @@ __all__ = [
 
 class OpenAICompModel:
     outputs = 1
-    # Provider "max_tokens" (OpenAI Responses/ChatCompletions style) is the maximum
-    # number of tokens the model may generate for the reply (i.e., output tokens).
+    # Provider "max_tokens" (Chat Completions style) is the maximum number of
+    # tokens the model may generate for the reply (i.e., output tokens).
     # Match Anthropic default to allow equally large reasoning / planning replies.
     max_tokens = int(os.getenv("CODESCRIBE_MAX_TOKENS", "32768"))
 
@@ -29,18 +29,14 @@ class OpenAICompModel:
         model: str,
         profile: str = "oaic",
         reasoning: bool = False,
-        prompt_caching: Optional[bool] = None,
     ) -> None:
         openai = importlib.import_module("openai")
 
         self.model = model
         self.profile = profile
+        # Reasoning, when enabled, always runs at high effort with a summary.
         self.reasoning_effort: Optional[str] = "high" if reasoning else None
-        self.prompt_caching = (
-            _env_flag("CODESCRIBE_PROMPT_CACHE", True)
-            if prompt_caching is None
-            else prompt_caching
-        )
+        self.reasoning_summary: Optional[str] = "auto" if reasoning else None
 
         if profile == "openai":
             self.apikey = os.getenv("OPENAI_API_KEY")
@@ -69,19 +65,21 @@ class OpenAICompModel:
             )
 
         self.last_usage = None
+        self._openai = openai
 
     @property
     def supports_native_tools(self) -> bool:
         return True
 
     def chat(self, chat_template: List[Dict[str, str]]) -> str:
-        response = self.pipeline.chat.completions.create(
-            **self._request_kwargs(messages=chat_template)
-        )
-        self.last_usage = _normalize_openai_usage(getattr(response, "usage", None))
-        normalized = self._normalize_message(
-            response.choices[0].message, self.last_usage
-        )
+        kwargs = self._request_kwargs(messages=chat_template)
+        normalized = self._stream_chat_completion(kwargs)
+        if normalized is None:
+            response = self.pipeline.chat.completions.create(**kwargs)
+            self.last_usage = _normalize_openai_usage(getattr(response, "usage", None))
+            normalized = self._normalize_message(
+                response.choices[0].message, self.last_usage
+            )
         return "\n\n".join(
             part for part in (normalized["reasoning"], normalized["text"]) if part
         )
@@ -89,9 +87,12 @@ class OpenAICompModel:
     def chat_with_tools(
         self, chat_template: List[Dict[str, Any]], tools: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        response = self.pipeline.chat.completions.create(
-            **self._request_kwargs(messages=chat_template, tools=tools)
-        )
+        kwargs = self._request_kwargs(messages=chat_template, tools=tools)
+        normalized = self._stream_chat_completion(kwargs)
+        if normalized is not None:
+            return normalized
+
+        response = self.pipeline.chat.completions.create(**kwargs)
         self.last_usage = _normalize_openai_usage(getattr(response, "usage", None))
         return self._normalize_message(response.choices[0].message, self.last_usage)
 
@@ -147,12 +148,15 @@ class OpenAICompModel:
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        if self.prompt_caching and messages:
-            messages = list(messages)
+        chat_messages: List[Dict[str, Any]] = []
+        for msg in messages:
+            role = msg.get("role")
+            if role in {"system", "user", "assistant", "tool"}:
+                chat_messages.append(msg)
 
         kwargs: Dict[str, Any] = {
             "model": self.model,
-            "messages": messages,
+            "messages": chat_messages,
             "max_tokens": self.max_tokens,
             "n": self.outputs,
         }
@@ -160,9 +164,125 @@ class OpenAICompModel:
             kwargs["tools"] = tools
         if self.reasoning_effort is not None:
             kwargs["reasoning_effort"] = self.reasoning_effort
-        if self.prompt_caching and self.profile == "oaic":
-            kwargs["extra_headers"] = {"x-prompt-cache": "true"}
         return kwargs
+
+    def _stream_chat_completion(
+        self, kwargs: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            stream = self.pipeline.chat.completions.create(**{**kwargs, "stream": True})
+        except Exception:
+            return None
+
+        text_parts: List[str] = []
+        reasoning_parts: List[str] = []
+        usage = None
+        tool_calls: Dict[int, Dict[str, Any]] = {}
+
+        try:
+            for chunk in stream:
+                usage = getattr(chunk, "usage", None) or usage
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = getattr(choices[0], "delta", None)
+                if delta is None:
+                    continue
+
+                content = getattr(delta, "content", None)
+                if isinstance(content, str):
+                    text_parts.append(content)
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            btype = block.get("type")
+                            btext = block.get("text") or block.get("summary")
+                        else:
+                            btype = getattr(block, "type", None)
+                            btext = getattr(block, "text", None) or getattr(
+                                block, "summary", None
+                            )
+                        if btype == "text" and btext:
+                            text_parts.append(btext)
+                        elif btype in ("reasoning", "summary_text") and btext:
+                            reasoning_parts.append(btext)
+
+                reasoning = getattr(delta, "reasoning", None)
+                if reasoning is not None:
+                    if isinstance(reasoning, str):
+                        reasoning_parts.append(reasoning)
+                    else:
+                        summary = getattr(reasoning, "summary", None)
+                        if isinstance(summary, str):
+                            reasoning_parts.append(summary)
+                        elif isinstance(summary, list):
+                            for item in summary:
+                                if isinstance(item, str):
+                                    reasoning_parts.append(item)
+                                else:
+                                    text = getattr(item, "text", None)
+                                    if text:
+                                        reasoning_parts.append(text)
+
+                for call in getattr(delta, "tool_calls", None) or []:
+                    index = getattr(call, "index", None)
+                    if index is None:
+                        index = len(tool_calls)
+                    entry = tool_calls.setdefault(
+                        index,
+                        {"id": None, "name": None, "arguments": ""},
+                    )
+                    if getattr(call, "id", None):
+                        entry["id"] = call.id
+                    function = getattr(call, "function", None)
+                    if function is not None:
+                        if getattr(function, "name", None):
+                            entry["name"] = function.name
+                        arguments = getattr(function, "arguments", None)
+                        if arguments:
+                            entry["arguments"] += arguments
+        except Exception:
+            return None
+
+        normalized_tool_calls: List[Dict[str, Any]] = []
+        for idx in sorted(tool_calls):
+            call = tool_calls[idx]
+            raw_args_str = call["arguments"] or "{}"
+            raw_args_err: str | None = None
+            try:
+                arguments = json.loads(raw_args_str)
+            except Exception as exc:
+                arguments = {}
+                raw_args_err = f"{type(exc).__name__}: {exc}"
+
+            item: Dict[str, Any] = {
+                "id": call["id"],
+                "name": call["name"],
+                "arguments": arguments,
+            }
+            if raw_args_err is not None:
+                item["_raw_arguments"] = raw_args_str
+                item["_raw_arguments_error"] = raw_args_err
+            normalized_tool_calls.append(item)
+
+        reasoning_text = "\n\n".join(
+            p
+            for i, p in enumerate((p.strip() for p in reasoning_parts if p))
+            if p and p not in reasoning_parts[:i]
+        )
+        normalized_usage = _normalize_openai_usage(usage)
+        self.last_usage = normalized_usage
+        return {
+            "text": "".join(text_parts),
+            "tool_calls": normalized_tool_calls,
+            "usage": normalized_usage,
+            "reasoning": reasoning_text,
+            "reasoning_blocks": (
+                [{"type": "reasoning", "text": reasoning_text}]
+                if reasoning_text
+                else []
+            ),
+        }
 
     def _normalize_message(self, message: Any, usage: Any = None) -> Dict[str, Any]:
         parts: List[str] = []
@@ -251,9 +371,6 @@ class AnthropicModel:
         self,
         model: str,
         reasoning: bool = False,
-        streaming: Optional[bool] = None,
-        prompt_caching: Optional[bool] = None,
-        thinking: Optional[Dict[str, Any]] = None,
     ) -> None:
         anthropic = importlib.import_module("anthropic")
 
@@ -262,19 +379,11 @@ class AnthropicModel:
             raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
 
         self.base_url = os.getenv("ANTHROPIC_BASE_URL")
-        env_streaming = _env_flag("CODESCRIBE_ANTHROPIC_STREAMING", True)
-        env_prompt_caching = _env_flag("CODESCRIBE_PROMPT_CACHE", True)
-        env_reasoning = _env_flag("CODESCRIBE_MODEL_REASONING", False)
-
-        self.streaming = env_streaming if streaming is None else streaming
-        self.prompt_caching = (
-            env_prompt_caching if prompt_caching is None else prompt_caching
+        self.reasoning_enabled = reasoning or _env_flag(
+            "CODESCRIBE_MODEL_REASONING", False
         )
-        self.reasoning_enabled = reasoning or env_reasoning
         self.thinking = (
-            thinking
-            if thinking is not None
-            else {"type": "adaptive", "display": "summarized"}
+            {"type": "adaptive", "display": "summarized"}
             if self.reasoning_enabled
             else None
         )
@@ -282,12 +391,12 @@ class AnthropicModel:
         client_kwargs = {"api_key": self.apikey}
         if self.base_url:
             client_kwargs["base_url"] = self.base_url
-        if self.prompt_caching:
-            # Request 1-hour cache TTL instead of the default 5 minutes so the
-            # system prompt and tool schemas stay warm across loop boundaries.
-            client_kwargs["default_headers"] = {
-                "anthropic-beta": "extended-cache-ttl-2025-04-11"
-            }
+        # The 1-hour TTL is requested per-block via cache_control.ttl in
+        # _request_kwargs; this header alone does nothing and is kept only for
+        # older gateways behind ANTHROPIC_BASE_URL.
+        client_kwargs["default_headers"] = {
+            "anthropic-beta": "extended-cache-ttl-2025-04-11"
+        }
 
         self.client = anthropic.Anthropic(**client_kwargs)
         self.model = model
@@ -301,38 +410,38 @@ class AnthropicModel:
     def chat(self, chat_template: List[Dict[str, str]]) -> str:
         kwargs = self._request_kwargs(chat_template)
 
-        if self.streaming:
-            # Newer anthropic-sdk-python versions require streaming for long requests
-            # (server-side enforcement for operations that may exceed ~10 minutes).
-            # Prefer streaming when enabled, but still fall back for older SDKs/providers.
-            try:
-                stream = self.client.messages.stream(**kwargs)
-            except Exception:
-                stream = None
-            if stream is not None:
-                text_parts: List[str] = []
-                start_usage = None
-                delta_output_tokens = 0
-                with stream as s:
-                    for event in s:
-                        et = getattr(event, "type", None)
-                        if et == "message_start":
-                            msg = getattr(event, "message", None)
-                            if msg is not None:
-                                start_usage = getattr(msg, "usage", None)
-                        elif et == "message_delta":
-                            du = getattr(event, "usage", None)
-                            if du is not None:
-                                delta_output_tokens = int(
-                                    getattr(du, "output_tokens", 0) or 0
-                                )
-                        elif et == "content_block_delta":
-                            delta = getattr(event, "delta", None)
-                            if getattr(delta, "type", None) == "text_delta":
-                                text_parts.append(getattr(delta, "text", "") or "")
+        # Newer anthropic-sdk-python versions require streaming for long requests
+        # (server-side enforcement for operations that may exceed ~10 minutes).
+        # Always attempt streaming, but fall back to a plain create() call if
+        # the SDK/provider doesn't support it.
+        try:
+            stream = self.client.messages.stream(**kwargs)
+        except Exception:
+            stream = None
+        if stream is not None:
+            text_parts: List[str] = []
+            start_usage = None
+            delta_output_tokens = 0
+            with stream as s:
+                for event in s:
+                    et = getattr(event, "type", None)
+                    if et == "message_start":
+                        msg = getattr(event, "message", None)
+                        if msg is not None:
+                            start_usage = getattr(msg, "usage", None)
+                    elif et == "message_delta":
+                        du = getattr(event, "usage", None)
+                        if du is not None:
+                            delta_output_tokens = int(
+                                getattr(du, "output_tokens", 0) or 0
+                            )
+                    elif et == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        if getattr(delta, "type", None) == "text_delta":
+                            text_parts.append(getattr(delta, "text", "") or "")
 
-                self.last_usage = _merge_stream_usage(start_usage, delta_output_tokens)
-                return "".join(text_parts)
+            self.last_usage = _merge_stream_usage(start_usage, delta_output_tokens)
+            return "".join(text_parts)
 
         response = self.client.messages.create(**kwargs)
         self.last_usage = _normalize_anthropic_usage(getattr(response, "usage", None))
@@ -346,58 +455,58 @@ class AnthropicModel:
     ) -> Dict[str, Any]:
         kwargs = self._request_kwargs(chat_template, tools)
 
-        if self.streaming:
-            # Prefer streaming for long requests; accumulate events and normalize into
-            # the same {text, tool_calls, usage} shape as non-streaming.
-            try:
-                stream = self.client.messages.stream(**kwargs)
-            except Exception:
-                stream = None
-            if stream is not None:
-                text_parts: List[str] = []
-                final_message = None
-                start_usage = None
-                delta_output_tokens = 0
+        # Always attempt streaming; accumulate events and normalize into the
+        # same {text, tool_calls, usage} shape as non-streaming. Falls back to
+        # a plain create() call if the SDK/provider doesn't support it.
+        try:
+            stream = self.client.messages.stream(**kwargs)
+        except Exception:
+            stream = None
+        if stream is not None:
+            text_parts: List[str] = []
+            final_message = None
+            start_usage = None
+            delta_output_tokens = 0
 
-                with stream as s:
-                    for event in s:
-                        et = getattr(event, "type", None)
-                        if et == "message_start":
-                            msg = getattr(event, "message", None)
-                            if msg is not None:
-                                start_usage = getattr(msg, "usage", None)
-                        elif et == "message_delta":
-                            du = getattr(event, "usage", None)
-                            if du is not None:
-                                delta_output_tokens = int(
-                                    getattr(du, "output_tokens", 0) or 0
-                                )
-                        elif et == "content_block_delta":
-                            delta = getattr(event, "delta", None)
-                            if getattr(delta, "type", None) == "text_delta":
-                                text_parts.append(getattr(delta, "text", "") or "")
-                    try:
-                        final_message = s.get_final_message()
-                    except Exception:
-                        pass
+            with stream as s:
+                for event in s:
+                    et = getattr(event, "type", None)
+                    if et == "message_start":
+                        msg = getattr(event, "message", None)
+                        if msg is not None:
+                            start_usage = getattr(msg, "usage", None)
+                    elif et == "message_delta":
+                        du = getattr(event, "usage", None)
+                        if du is not None:
+                            delta_output_tokens = int(
+                                getattr(du, "output_tokens", 0) or 0
+                            )
+                    elif et == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        if getattr(delta, "type", None) == "text_delta":
+                            text_parts.append(getattr(delta, "text", "") or "")
+                try:
+                    final_message = s.get_final_message()
+                except Exception:
+                    pass
 
-                # Use event-captured usage (reliable even with extended thinking);
-                # get_final_message() is still attempted for content extraction.
-                usage = _merge_stream_usage(start_usage, delta_output_tokens)
-                self.last_usage = usage
+            # Use event-captured usage (reliable even with extended thinking);
+            # get_final_message() is still attempted for content extraction.
+            usage = _merge_stream_usage(start_usage, delta_output_tokens)
+            self.last_usage = usage
 
-                response = final_message
-                if response is None:
-                    return {
-                        "text": "".join(text_parts),
-                        "tool_calls": [],
-                        "usage": usage,
-                    }
+            response = final_message
+            if response is None:
+                return {
+                    "text": "".join(text_parts),
+                    "tool_calls": [],
+                    "usage": usage,
+                }
 
-                normalized = _normalize_anthropic_tool_response(response, usage)
-                if not normalized.get("text"):
-                    normalized["text"] = "".join(text_parts)
-                return normalized
+            normalized = _normalize_anthropic_tool_response(response, usage)
+            if not normalized.get("text"):
+                normalized["text"] = "".join(text_parts)
+            return normalized
 
         response = self.client.messages.create(**kwargs)
         usage = _normalize_anthropic_usage(getattr(response, "usage", None))
@@ -452,7 +561,11 @@ class AnthropicModel:
             else:
                 messages.append(msg)
 
-        if self.prompt_caching and len(messages) >= 2:
+        # Rolling breakpoint on the second-to-last user turn: already frozen, so
+        # turn N reads what turn N-1 wrote. Kept at the default 5m TTL since the
+        # entry is superseded next turn (tools/system below are written at 1h,
+        # and longer TTLs must precede shorter ones in the prefix).
+        if len(messages) >= 2:
             messages = list(messages)
             n_user = 0
             for i in range(len(messages) - 1, -1, -1):
@@ -490,18 +603,14 @@ class AnthropicModel:
             "messages": messages,
         }
         if system_parts:
-            kwargs["system"] = (
-                [
-                    {
-                        "type": "text",
-                        "text": system_parts[0],
-                        "cache_control": {"type": "ephemeral"},
-                    },
-                    *[{"type": "text", "text": p} for p in system_parts[1:]],
-                ]
-                if self.prompt_caching
-                else "\n\n".join(system_parts)
-            )
+            kwargs["system"] = [
+                {
+                    "type": "text",
+                    "text": system_parts[0],
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"},
+                },
+                *[{"type": "text", "text": p} for p in system_parts[1:]],
+            ]
         if tools is not None:
             anthropic_tools = [
                 {
@@ -511,10 +620,10 @@ class AnthropicModel:
                 }
                 for tool in tools
             ]
-            if self.prompt_caching and anthropic_tools:
+            if anthropic_tools:
                 anthropic_tools[-1] = {
                     **anthropic_tools[-1],
-                    "cache_control": {"type": "ephemeral"},
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"},
                 }
             kwargs["tools"] = anthropic_tools
         if self.thinking is not None:
@@ -530,6 +639,17 @@ def _env_flag(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.lower() in ("1", "true", "yes")
+
+
+def _attr(obj: Any, *names: str) -> Any:
+    """First non-None attribute (or key, for dicts) among `names`, else None."""
+    if obj is None:
+        return None
+    for name in names:
+        value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+        if value is not None:
+            return value
+    return None
 
 
 def _normalize_openai_usage(usage: Any) -> Any:
@@ -559,13 +679,30 @@ def _normalize_openai_usage(usage: Any) -> Any:
     if rt is not None:
         normalized["reasoning_tokens"] = int(rt)
 
-    # OpenAI automatic prompt caching: cached_tokens lives under prompt_tokens_details.
-    pt_details = getattr(usage, "prompt_tokens_details", None)
-    ct = getattr(pt_details, "cached_tokens", None) if pt_details is not None else None
+    # Prompt caching counters: Chat Completions nests these under
+    # prompt_tokens_details, other surfaces under input_tokens_details or at the
+    # top level. Only newer models bill writes separately and report them.
+    details = _attr(usage, "prompt_tokens_details", "input_tokens_details")
+    ct = _attr(details, "cached_tokens")
     if ct is None:
-        ct = getattr(usage, "cached_tokens", None)
+        ct = _attr(usage, "cached_tokens")
     if ct is not None:
         normalized["cache_read_input_tokens"] = int(ct)
+
+    cw = _attr(details, "cache_write_tokens", "cache_creation_tokens")
+    if cw is None:
+        cw = _attr(usage, "cache_write_tokens", "cache_creation_input_tokens")
+    if cw is not None:
+        normalized["cache_creation_input_tokens"] = int(cw)
+
+    # Anthropic reports input_tokens as the tokens *after* the last breakpoint
+    # (total = input + read + creation) but OpenAI's prompt_tokens includes
+    # them, so subtract to stop TokenUsage.total double-counting cache hits.
+    cached_total = int(ct or 0) + int(cw or 0)
+    if cached_total:
+        for key in ("prompt_tokens", "input_tokens"):
+            if key in normalized:
+                normalized[key] = max(0, int(normalized[key]) - cached_total)
 
     if not normalized and hasattr(usage, "model_dump"):
         return usage.model_dump()
