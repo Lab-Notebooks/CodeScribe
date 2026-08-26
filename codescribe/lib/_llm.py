@@ -19,10 +19,9 @@ __all__ = [
 
 class OpenAICompModel:
     outputs = 1
-    # Provider "max_output_tokens" (Responses API) is the maximum number of
-    # tokens the model may generate for the reply (i.e., output tokens,
-    # reasoning included). Match Anthropic default to allow equally large
-    # reasoning / planning replies.
+    # Provider "max_tokens" (Chat Completions style) is the maximum number of
+    # tokens the model may generate for the reply (i.e., output tokens).
+    # Match Anthropic default to allow equally large reasoning / planning replies.
     max_tokens = int(os.getenv("CODESCRIBE_MAX_TOKENS", "32768"))
 
     def __init__(
@@ -66,17 +65,21 @@ class OpenAICompModel:
             )
 
         self.last_usage = None
+        self._openai = openai
 
     @property
     def supports_native_tools(self) -> bool:
         return True
 
     def chat(self, chat_template: List[Dict[str, str]]) -> str:
-        response = self.pipeline.responses.create(
-            **self._request_kwargs(messages=chat_template)
-        )
-        self.last_usage = _normalize_responses_usage(getattr(response, "usage", None))
-        normalized = self._normalize_response(response, self.last_usage)
+        kwargs = self._request_kwargs(messages=chat_template)
+        normalized = self._stream_chat_completion(kwargs)
+        if normalized is None:
+            response = self.pipeline.chat.completions.create(**kwargs)
+            self.last_usage = _normalize_openai_usage(getattr(response, "usage", None))
+            normalized = self._normalize_message(
+                response.choices[0].message, self.last_usage
+            )
         return "\n\n".join(
             part for part in (normalized["reasoning"], normalized["text"]) if part
         )
@@ -84,13 +87,14 @@ class OpenAICompModel:
     def chat_with_tools(
         self, chat_template: List[Dict[str, Any]], tools: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        response = self.pipeline.responses.create(
-            **self._request_kwargs(
-                messages=chat_template, tools=self._to_responses_tools(tools)
-            )
-        )
-        self.last_usage = _normalize_responses_usage(getattr(response, "usage", None))
-        return self._normalize_response(response, self.last_usage)
+        kwargs = self._request_kwargs(messages=chat_template, tools=tools)
+        normalized = self._stream_chat_completion(kwargs)
+        if normalized is not None:
+            return normalized
+
+        response = self.pipeline.chat.completions.create(**kwargs)
+        self.last_usage = _normalize_openai_usage(getattr(response, "usage", None))
+        return self._normalize_message(response.choices[0].message, self.last_usage)
 
     def format_tool_result_messages(
         self,
@@ -98,178 +102,261 @@ class OpenAICompModel:
         outputs: List[str],
         reasoning_blocks: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
-        # Native Responses API input items. Reasoning items must precede the
-        # function_call items they were produced alongside, and must be
-        # echoed back verbatim (encrypted_content is opaque) rather than
-        # reconstructed, mirroring how AnthropicModel replays `thinking`
-        # blocks with their `signature` untouched.
-        items: List[Dict[str, Any]] = []
-        for block in reasoning_blocks or []:
-            items.append(block)
+        assistant_tool_calls = []
         for call in tool_calls:
-            items.append(
+            assistant_tool_calls.append(
                 {
-                    "type": "function_call",
-                    "call_id": call["id"],
-                    "name": call["name"],
-                    "arguments": json.dumps(call["arguments"], ensure_ascii=False),
+                    "id": call["id"],
+                    "type": "function",
+                    "function": {
+                        "name": call["name"],
+                        "arguments": json.dumps(call["arguments"], ensure_ascii=False),
+                    },
                 }
             )
-        for call, output in zip(tool_calls, outputs):
-            items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": call["id"],
-                    "output": output,
-                }
-            )
-        return items
 
-    def _to_responses_tools(
-        self, tools: Optional[List[Dict[str, Any]]]
-    ) -> Optional[List[Dict[str, Any]]]:
-        if tools is None:
-            return None
-        return [
+        assistant_content = None
+        if reasoning_blocks:
+            assistant_content = (
+                "\n\n".join(
+                    block.get("text", "")
+                    for block in reasoning_blocks
+                    if block.get("text")
+                )
+                or None
+            )
+
+        messages: List[Dict[str, Any]] = [
             {
-                "type": "function",
-                "name": tool["function"]["name"],
-                "description": tool["function"].get("description", ""),
-                "parameters": tool["function"]["parameters"],
-                "strict": False,
+                "role": "assistant",
+                "content": assistant_content,
+                "tool_calls": assistant_tool_calls,
             }
-            for tool in tools
         ]
+        for call, output in zip(tool_calls, outputs):
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call["id"],
+                    "content": output,
+                }
+            )
+        return messages
 
     def _request_kwargs(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        instructions_parts: List[str] = []
-        input_items: List[Dict[str, Any]] = []
+        chat_messages: List[Dict[str, Any]] = []
         for msg in messages:
-            if msg.get("role") == "system":
-                instructions_parts.append(msg.get("content", ""))
-            else:
-                input_items.append(msg)
-
-        if len(input_items) >= 2:
-            input_items = list(input_items)
-            n_user = 0
-            for i in range(len(input_items) - 1, -1, -1):
-                if input_items[i].get("role") == "user":
-                    n_user += 1
-                    if n_user == 2:
-                        m = input_items[i]
-                        c = m.get("content", "")
-                        if isinstance(c, str):
-                            input_items[i] = dict(
-                                m,
-                                content=[
-                                    {
-                                        "type": "input_text",
-                                        "text": c,
-                                        "prompt_cache_breakpoint": {
-                                            "mode": "explicit"
-                                        },
-                                    }
-                                ],
-                            )
-                        elif isinstance(c, list) and c:
-                            last = c[-1]
-                            if (
-                                isinstance(last, dict)
-                                and "prompt_cache_breakpoint" not in last
-                            ):
-                                input_items[i] = dict(
-                                    m,
-                                    content=c[:-1]
-                                    + [
-                                        {
-                                            **last,
-                                            "prompt_cache_breakpoint": {
-                                                "mode": "explicit"
-                                            },
-                                        }
-                                    ],
-                                )
-                        break
+            role = msg.get("role")
+            if role in {"system", "user", "assistant", "tool"}:
+                chat_messages.append(msg)
 
         kwargs: Dict[str, Any] = {
             "model": self.model,
-            "input": input_items,
-            "max_output_tokens": self.max_tokens,
-            "store": False,
+            "messages": chat_messages,
+            "max_tokens": self.max_tokens,
+            "n": self.outputs,
         }
-        if instructions_parts:
-            kwargs["instructions"] = "\n\n".join(p for p in instructions_parts if p)
         if tools is not None:
             kwargs["tools"] = tools
         if self.reasoning_effort is not None:
-            kwargs["reasoning"] = {
-                "effort": self.reasoning_effort,
-                "summary": self.reasoning_summary,
-            }
-            kwargs["include"] = ["reasoning.encrypted_content"]
-        kwargs["prompt_cache_options"] = {"mode": "explicit", "ttl": "30m"}
+            kwargs["reasoning_effort"] = self.reasoning_effort
         return kwargs
 
-    def _normalize_response(self, response: Any, usage: Any = None) -> Dict[str, Any]:
-        text = getattr(response, "output_text", None)
-        if not isinstance(text, str):
-            text = ""
+    def _stream_chat_completion(
+        self, kwargs: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            stream = self.pipeline.chat.completions.create(**{**kwargs, "stream": True})
+        except Exception:
+            return None
 
-        tool_calls: List[Dict[str, Any]] = []
-        reasoning_blocks: List[Dict[str, Any]] = []
+        text_parts: List[str] = []
         reasoning_parts: List[str] = []
+        usage = None
+        tool_calls: Dict[int, Dict[str, Any]] = {}
 
-        for item in getattr(response, "output", None) or []:
-            itype = getattr(item, "type", None)
-            if itype == "message" and not text:
-                for block in getattr(item, "content", None) or []:
-                    if getattr(block, "type", None) == "output_text":
-                        text += getattr(block, "text", "") or ""
-            elif itype == "function_call":
-                raw_args = getattr(item, "arguments", None) or "{}"
-                raw_args_str = raw_args if isinstance(raw_args, str) else str(raw_args)
-                raw_args_err: str | None = None
-                try:
-                    arguments = json.loads(raw_args_str)
-                except Exception as exc:
-                    arguments = {}
-                    raw_args_err = f"{type(exc).__name__}: {exc}"
+        try:
+            for chunk in stream:
+                usage = getattr(chunk, "usage", None) or usage
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = getattr(choices[0], "delta", None)
+                if delta is None:
+                    continue
 
-                call_item: Dict[str, Any] = {
-                    "id": getattr(item, "call_id", None),
-                    "name": getattr(item, "name", None),
-                    "arguments": arguments,
-                }
-                if raw_args_err is not None:
-                    call_item["_raw_arguments"] = raw_args_str
-                    call_item["_raw_arguments_error"] = raw_args_err
-                tool_calls.append(call_item)
-            elif itype == "reasoning":
-                dump = None
-                if hasattr(item, "model_dump"):
-                    dump = item.model_dump(exclude_none=True)
-                elif isinstance(item, dict):
-                    dump = dict(item)
-                if dump is not None:
-                    reasoning_blocks.append(dump)
-                for summary in getattr(item, "summary", None) or []:
-                    summary_text = getattr(summary, "text", None)
-                    if summary_text:
-                        reasoning_parts.append(summary_text)
+                content = getattr(delta, "content", None)
+                if isinstance(content, str):
+                    text_parts.append(content)
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            btype = block.get("type")
+                            btext = block.get("text") or block.get("summary")
+                        else:
+                            btype = getattr(block, "type", None)
+                            btext = getattr(block, "text", None) or getattr(
+                                block, "summary", None
+                            )
+                        if btype == "text" and btext:
+                            text_parts.append(btext)
+                        elif btype in ("reasoning", "summary_text") and btext:
+                            reasoning_parts.append(btext)
 
-        reasoning_text = "\n\n".join(p for p in reasoning_parts if p)
+                reasoning = getattr(delta, "reasoning", None)
+                if reasoning is not None:
+                    if isinstance(reasoning, str):
+                        reasoning_parts.append(reasoning)
+                    else:
+                        summary = getattr(reasoning, "summary", None)
+                        if isinstance(summary, str):
+                            reasoning_parts.append(summary)
+                        elif isinstance(summary, list):
+                            for item in summary:
+                                if isinstance(item, str):
+                                    reasoning_parts.append(item)
+                                else:
+                                    text = getattr(item, "text", None)
+                                    if text:
+                                        reasoning_parts.append(text)
+
+                for call in getattr(delta, "tool_calls", None) or []:
+                    index = getattr(call, "index", None)
+                    if index is None:
+                        index = len(tool_calls)
+                    entry = tool_calls.setdefault(
+                        index,
+                        {"id": None, "name": None, "arguments": ""},
+                    )
+                    if getattr(call, "id", None):
+                        entry["id"] = call.id
+                    function = getattr(call, "function", None)
+                    if function is not None:
+                        if getattr(function, "name", None):
+                            entry["name"] = function.name
+                        arguments = getattr(function, "arguments", None)
+                        if arguments:
+                            entry["arguments"] += arguments
+        except Exception:
+            return None
+
+        normalized_tool_calls: List[Dict[str, Any]] = []
+        for idx in sorted(tool_calls):
+            call = tool_calls[idx]
+            raw_args_str = call["arguments"] or "{}"
+            raw_args_err: str | None = None
+            try:
+                arguments = json.loads(raw_args_str)
+            except Exception as exc:
+                arguments = {}
+                raw_args_err = f"{type(exc).__name__}: {exc}"
+
+            item: Dict[str, Any] = {
+                "id": call["id"],
+                "name": call["name"],
+                "arguments": arguments,
+            }
+            if raw_args_err is not None:
+                item["_raw_arguments"] = raw_args_str
+                item["_raw_arguments_error"] = raw_args_err
+            normalized_tool_calls.append(item)
+
+        reasoning_text = "\n\n".join(
+            p
+            for i, p in enumerate((p.strip() for p in reasoning_parts if p))
+            if p and p not in reasoning_parts[:i]
+        )
+        normalized_usage = _normalize_openai_usage(usage)
+        self.last_usage = normalized_usage
+        return {
+            "text": "".join(text_parts),
+            "tool_calls": normalized_tool_calls,
+            "usage": normalized_usage,
+            "reasoning": reasoning_text,
+            "reasoning_blocks": (
+                [{"type": "reasoning", "text": reasoning_text}]
+                if reasoning_text
+                else []
+            ),
+        }
+
+    def _normalize_message(self, message: Any, usage: Any = None) -> Dict[str, Any]:
+        parts: List[str] = []
+        reasoning = getattr(message, "reasoning", None)
+        if reasoning is not None:
+            if isinstance(reasoning, str):
+                parts.append(reasoning)
+            else:
+                summary = getattr(reasoning, "summary", None)
+                if isinstance(summary, str):
+                    parts.append(summary)
+                elif isinstance(summary, list):
+                    for item in summary:
+                        if isinstance(item, str):
+                            parts.append(item)
+                        else:
+                            text = getattr(item, "text", None)
+                            if text:
+                                parts.append(text)
+
+        content = getattr(message, "content", None)
+        text = content if isinstance(content, str) else ""
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    btype = block.get("type")
+                    btext = block.get("text") or block.get("summary")
+                else:
+                    btype = getattr(block, "type", None)
+                    btext = getattr(block, "text", None) or getattr(
+                        block, "summary", None
+                    )
+                if btype == "text" and btext:
+                    text = f"{text}{btext}"
+                elif btype in ("reasoning", "summary_text") and btext:
+                    parts.append(btext)
+
+        reasoning_text = "\n\n".join(
+            p
+            for i, p in enumerate((p.strip() for p in parts if p))
+            if p and p not in parts[:i]
+        )
+
+        tool_calls = []
+        for call in getattr(message, "tool_calls", []) or []:
+            raw_args = call.function.arguments or "{}"
+            raw_args_str = raw_args if isinstance(raw_args, str) else str(raw_args)
+            raw_args_err: str | None = None
+            try:
+                arguments = json.loads(raw_args_str)
+            except Exception as exc:
+                arguments = {}
+                raw_args_err = f"{type(exc).__name__}: {exc}"
+
+            item: Dict[str, Any] = {
+                "id": call.id,
+                "name": call.function.name,
+                "arguments": arguments,
+            }
+            if raw_args_err is not None:
+                item["_raw_arguments"] = raw_args_str
+                item["_raw_arguments_error"] = raw_args_err
+            tool_calls.append(item)
 
         return {
             "text": text,
             "tool_calls": tool_calls,
-            "usage": usage,
+            "usage": _normalize_openai_usage(usage),
             "reasoning": reasoning_text,
-            "reasoning_blocks": reasoning_blocks,
+            "reasoning_blocks": (
+                [{"type": "reasoning", "text": reasoning_text}]
+                if reasoning_text
+                else []
+            ),
         }
 
     def __repr__(self) -> str:
@@ -304,8 +391,9 @@ class AnthropicModel:
         client_kwargs = {"api_key": self.apikey}
         if self.base_url:
             client_kwargs["base_url"] = self.base_url
-        # Request 1-hour cache TTL instead of the default 5 minutes so the
-        # system prompt and tool schemas stay warm across loop boundaries.
+        # The 1-hour TTL is requested per-block via cache_control.ttl in
+        # _request_kwargs; this header alone does nothing and is kept only for
+        # older gateways behind ANTHROPIC_BASE_URL.
         client_kwargs["default_headers"] = {
             "anthropic-beta": "extended-cache-ttl-2025-04-11"
         }
@@ -473,6 +561,10 @@ class AnthropicModel:
             else:
                 messages.append(msg)
 
+        # Rolling breakpoint on the second-to-last user turn: already frozen, so
+        # turn N reads what turn N-1 wrote. Kept at the default 5m TTL since the
+        # entry is superseded next turn (tools/system below are written at 1h,
+        # and longer TTLs must precede shorter ones in the prefix).
         if len(messages) >= 2:
             messages = list(messages)
             n_user = 0
@@ -515,7 +607,7 @@ class AnthropicModel:
                 {
                     "type": "text",
                     "text": system_parts[0],
-                    "cache_control": {"type": "ephemeral"},
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"},
                 },
                 *[{"type": "text", "text": p} for p in system_parts[1:]],
             ]
@@ -531,7 +623,7 @@ class AnthropicModel:
             if anthropic_tools:
                 anthropic_tools[-1] = {
                     **anthropic_tools[-1],
-                    "cache_control": {"type": "ephemeral"},
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"},
                 }
             kwargs["tools"] = anthropic_tools
         if self.thinking is not None:
@@ -549,34 +641,68 @@ def _env_flag(name: str, default: bool) -> bool:
     return value.lower() in ("1", "true", "yes")
 
 
-def _normalize_responses_usage(usage: Any) -> Any:
-    """Normalize a Responses API ``ResponseUsage`` into the shared usage dict
-    shape ``TokenUsage.from_raw`` (see ``_agent.py``) expects."""
+def _attr(obj: Any, *names: str) -> Any:
+    """First non-None attribute (or key, for dicts) among `names`, else None."""
+    if obj is None:
+        return None
+    for name in names:
+        value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+        if value is not None:
+            return value
+    return None
+
+
+def _normalize_openai_usage(usage: Any) -> Any:
     if usage is None:
         return None
     if isinstance(usage, dict):
         return usage
 
-    normalized: Dict[str, Any] = {}
-    for key in ("input_tokens", "output_tokens", "total_tokens"):
+    normalized = {}
+    for key in (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "input_tokens",
+        "output_tokens",
+    ):
         value = getattr(usage, key, None)
         if value is not None:
             normalized[key] = value
 
-    input_details = getattr(usage, "input_tokens_details", None)
-    cached = getattr(input_details, "cached_tokens", None) if input_details else None
-    if cached is not None:
-        normalized["cache_read_input_tokens"] = int(cached)
-    cache_write = (
-        getattr(input_details, "cache_write_tokens", None) if input_details else None
-    )
-    if cache_write is not None:
-        normalized["cache_creation_input_tokens"] = int(cache_write)
-
-    output_details = getattr(usage, "output_tokens_details", None)
-    rt = getattr(output_details, "reasoning_tokens", None) if output_details else None
+    # o1/o3/o4-mini models nest reasoning_tokens under completion_tokens_details.
+    details = getattr(usage, "completion_tokens_details", None)
+    rt = getattr(details, "reasoning_tokens", None) if details is not None else None
+    if rt is None:
+        # Some OpenAI-compatible providers expose it at the top level.
+        rt = getattr(usage, "reasoning_tokens", None)
     if rt is not None:
         normalized["reasoning_tokens"] = int(rt)
+
+    # Prompt caching counters: Chat Completions nests these under
+    # prompt_tokens_details, other surfaces under input_tokens_details or at the
+    # top level. Only newer models bill writes separately and report them.
+    details = _attr(usage, "prompt_tokens_details", "input_tokens_details")
+    ct = _attr(details, "cached_tokens")
+    if ct is None:
+        ct = _attr(usage, "cached_tokens")
+    if ct is not None:
+        normalized["cache_read_input_tokens"] = int(ct)
+
+    cw = _attr(details, "cache_write_tokens", "cache_creation_tokens")
+    if cw is None:
+        cw = _attr(usage, "cache_write_tokens", "cache_creation_input_tokens")
+    if cw is not None:
+        normalized["cache_creation_input_tokens"] = int(cw)
+
+    # Anthropic reports input_tokens as the tokens *after* the last breakpoint
+    # (total = input + read + creation) but OpenAI's prompt_tokens includes
+    # them, so subtract to stop TokenUsage.total double-counting cache hits.
+    cached_total = int(ct or 0) + int(cw or 0)
+    if cached_total:
+        for key in ("prompt_tokens", "input_tokens"):
+            if key in normalized:
+                normalized[key] = max(0, int(normalized[key]) - cached_total)
 
     if not normalized and hasattr(usage, "model_dump"):
         return usage.model_dump()
