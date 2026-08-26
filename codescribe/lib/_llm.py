@@ -34,9 +34,13 @@ class OpenAICompModel:
         # Read per instance, not at class level, so CODESCRIBE_MAX_TOKENS
         # applies whenever the model is constructed.
         self.max_tokens = int(os.getenv("CODESCRIBE_MAX_TOKENS", "32768"))
-        # Reasoning, when enabled, always runs at high effort with a summary.
-        self.reasoning_effort: Optional[str] = "high" if reasoning else None
-        self.reasoning_summary: Optional[str] = "auto" if reasoning else None
+        self.reasoning_enabled = reasoning or _env_flag(
+            "CODESCRIBE_MODEL_REASONING", False
+        )
+        # Reasoning, when enabled, always runs at high effort.
+        self.reasoning_effort: Optional[str] = (
+            "high" if self.reasoning_enabled else None
+        )
 
         if profile == "openai":
             self.apikey = os.getenv("OPENAI_API_KEY")
@@ -739,9 +743,25 @@ def _merge_stream_usage(
             val = getattr(start_usage, key, None)
             if isinstance(val, int):
                 result[key] = val
+        result.update(_anthropic_cache_creation_split(start_usage))
     if delta_output_tokens:
         result["output_tokens"] = delta_output_tokens
     return result or None
+
+
+def _anthropic_cache_creation_split(usage: Any) -> Dict[str, int]:
+    creation = _attr(usage, "cache_creation")
+    if creation is None:
+        return {}
+    split: Dict[str, int] = {}
+    for src, dst in (
+        ("ephemeral_5m_input_tokens", "cache_creation_5m_input_tokens"),
+        ("ephemeral_1h_input_tokens", "cache_creation_1h_input_tokens"),
+    ):
+        val = _attr(creation, src)
+        if isinstance(val, int):
+            split[dst] = val
+    return split
 
 
 def _normalize_anthropic_usage(usage: Any) -> Any:
@@ -762,6 +782,8 @@ def _normalize_anthropic_usage(usage: Any) -> Any:
         value = getattr(usage, src, None)
         if value is not None:
             normalized[dst] = value
+
+    normalized.update(_anthropic_cache_creation_split(usage))
 
     if not normalized and hasattr(usage, "model_dump"):
         return usage.model_dump()

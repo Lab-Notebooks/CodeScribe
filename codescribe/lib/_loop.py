@@ -141,6 +141,8 @@ class LoopSummary:
     total_output_tokens: int = 0
     total_cache_creation_tokens: int = 0
     total_cache_read_tokens: int = 0
+    total_cache_creation_5m_tokens: int = 0
+    total_cache_creation_1h_tokens: int = 0
 
 
 @dataclass
@@ -205,10 +207,15 @@ class PromptLoopRunner:
             "model": str(self.model),
             "agent_loops": int(self.agent_loops),
             "agent_iterations": int(self.agent_iterations),
+            "reason": bool(self.reason),
+            "max_tokens": int(getattr(self.neural_model, "max_tokens", 0)),
+            "reasoning_config": _reasoning_config_str(self.neural_model),
             "cumulative_input_tokens": 0,
             "cumulative_output_tokens": 0,
             "cumulative_cache_creation_tokens": 0,
             "cumulative_cache_read_tokens": 0,
+            "cumulative_cache_creation_5m_tokens": 0,
+            "cumulative_cache_creation_1h_tokens": 0,
             "loops_completed": 0,
         }
         lib.atomic_write_toml(self.paths.run_toml, self.run_toml_data)
@@ -512,6 +519,8 @@ def loop_summary_from_result(loop_index: int, result: "lib.RunResult") -> LoopSu
     summary.total_output_tokens = u.output
     summary.total_cache_creation_tokens = u.cache_write
     summary.total_cache_read_tokens = u.cache_read
+    summary.total_cache_creation_5m_tokens = u.cache_write_5m
+    summary.total_cache_creation_1h_tokens = u.cache_write_1h
 
     return summary
 
@@ -798,6 +807,16 @@ def extract_status(final_text: str) -> Optional[str]:
     return None
 
 
+def _reasoning_config_str(neural_model: Any) -> str:
+    thinking = getattr(neural_model, "thinking", None)
+    if thinking:
+        return "thinking=" + ",".join(f"{k}:{v}" for k, v in sorted(thinking.items()))
+    effort = getattr(neural_model, "reasoning_effort", None)
+    if effort:
+        return f"reasoning_effort={effort}"
+    return "provider-default"
+
+
 def update_cumulative_tokens(
     run_toml_data: Dict[str, Any], summaries: List[LoopSummary]
 ) -> None:
@@ -813,6 +832,12 @@ def update_cumulative_tokens(
     )
     run_toml_data["cumulative_cache_read_tokens"] = sum(
         s.total_cache_read_tokens for s in summaries
+    )
+    run_toml_data["cumulative_cache_creation_5m_tokens"] = sum(
+        s.total_cache_creation_5m_tokens for s in summaries
+    )
+    run_toml_data["cumulative_cache_creation_1h_tokens"] = sum(
+        s.total_cache_creation_1h_tokens for s in summaries
     )
 
 

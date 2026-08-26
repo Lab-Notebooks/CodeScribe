@@ -84,10 +84,16 @@ class TokenUsage:
     reasoning: int = 0
     cache_write: int = 0
     cache_read: int = 0
+    cache_write_5m: int = 0
+    cache_write_1h: int = 0
 
     @property
     def total(self) -> int:
         return self.input + self.output + self.cache_write + self.cache_read
+
+    @property
+    def cache_write_unattributed(self) -> int:
+        return max(0, self.cache_write - self.cache_write_5m - self.cache_write_1h)
 
     def __add__(self, other: "TokenUsage") -> "TokenUsage":
         return TokenUsage(
@@ -96,6 +102,8 @@ class TokenUsage:
             reasoning=self.reasoning + other.reasoning,
             cache_write=self.cache_write + other.cache_write,
             cache_read=self.cache_read + other.cache_read,
+            cache_write_5m=self.cache_write_5m + other.cache_write_5m,
+            cache_write_1h=self.cache_write_1h + other.cache_write_1h,
         )
 
     @classmethod
@@ -115,6 +123,8 @@ class TokenUsage:
             reasoning=int(usage.get("reasoning_tokens", 0) or 0),
             cache_write=int(usage.get("cache_creation_input_tokens", 0) or 0),
             cache_read=int(usage.get("cache_read_input_tokens", 0) or 0),
+            cache_write_5m=int(usage.get("cache_creation_5m_input_tokens", 0) or 0),
+            cache_write_1h=int(usage.get("cache_creation_1h_input_tokens", 0) or 0),
         )
 
 
