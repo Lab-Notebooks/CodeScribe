@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 from glob import glob
@@ -29,7 +30,13 @@ __all__ = [
     "make_tools",
     "make_readonly_tools",
     "DEFAULT_TOOLS",
+    "DEFAULT_SCRIPT_DIR",
+    "resolve_script_dir",
 ]
+
+# Fallback location for python scripts when a task file allowlists python but
+# does not set [tools].scripts_dir (workdir-relative).
+DEFAULT_SCRIPT_DIR = ".codescribe/tmp"
 
 
 class AgentTool:
@@ -294,6 +301,11 @@ class BashTool(AgentTool):
         "echo",
         "sed",
     }
+    _PYTHON_RE = re.compile(r"^(i?python|pypy)[0-9.]*$")
+    # Interpreter flags that take no argument and cannot inject code.
+    _PYTHON_SAFE_FLAGS = {
+        "-u", "-B", "-I", "-E", "-s", "-S", "-O", "-OO", "-q", "-b", "-bb", "-P"
+    }
 
     def __init__(
         self,
@@ -301,11 +313,15 @@ class BashTool(AgentTool):
         bounded: bool = False,
         allowed_commands: Optional[set] = None,
         protected_paths: Optional[set] = None,
+        script_dir: Optional[Path] = None,
     ) -> None:
         self.cwd = Path(cwd).resolve() if cwd is not None else None
         self.bounded = bounded
         self.allowed_commands = set(allowed_commands or self._DEFAULT_ALLOWED)
         self.protected_paths = set(protected_paths or set())
+        # When set, python interpreters may only run .py files under this
+        # directory, so every piece of executed python leaves a file behind.
+        self.script_dir = Path(script_dir).resolve() if script_dir is not None else None
 
         desc = "Execute a bash command in the current working directory."
         if cwd is not None:
@@ -338,6 +354,15 @@ class BashTool(AgentTool):
                     "--work-tree/--namespace/--upload-pack/--receive-pack/--upload-archive "
                     "flags are rejected; ext:: and fd:: transport URLs are rejected."
                 )
+            if self.script_dir is not None and any(
+                self.is_python(cmd) for cmd in self.allowed_commands
+            ):
+                rel = self.script_dir_display()
+                caveats.append(
+                    f"python: may only run a .py file under {rel}/ (write it there "
+                    f"first, then run e.g. `python3 {rel}/check.py`); -c, -m, stdin "
+                    "and the interactive REPL are rejected."
+                )
             if caveats:
                 desc += " " + " ".join(caveats)
 
@@ -363,6 +388,48 @@ class BashTool(AgentTool):
             enabled=True,
         )
 
+    @classmethod
+    def is_python(cls, exe: str) -> bool:
+        return bool(cls._PYTHON_RE.match(exe))
+
+    def script_dir_display(self) -> str:
+        if self.script_dir is None:
+            return ""
+        if self.cwd is not None:
+            try:
+                return str(self.script_dir.relative_to(self.cwd))
+            except ValueError:
+                pass
+        return str(self.script_dir)
+
+    def validate_python_script(self, parts: List[str]) -> Optional[str]:
+        """Require `python [safe flags] <script_dir>/x.py [args]`."""
+        rel = self.script_dir_display()
+        hint = (
+            f"python may only run a script file under {rel}/; write the code there "
+            f"with the write tool, then run `{parts[0]} {rel}/<name>.py`"
+        )
+        script = None
+        for arg in parts[1:]:
+            if arg in self._PYTHON_SAFE_FLAGS:
+                continue
+            if arg.startswith("-"):
+                return f"disallowed {parts[0]} flag {arg!r}: {hint}"
+            script = arg
+            break
+        if script is None:
+            return f"interactive/stdin python is not allowed: {hint}"
+        if not script.endswith(".py"):
+            return f"not a .py script: {script!r}: {hint}"
+        try:
+            resolved = self.resolve_within_root(self.cwd or Path.cwd(), script)
+            resolved.relative_to(self.script_dir)
+        except ValueError:
+            return f"script outside {rel}/: {script!r}: {hint}"
+        if not resolved.is_file():
+            return f"script not found: {script!r}: {hint}"
+        return None
+
     def validate_command(self, command: str) -> Optional[str]:
         if not self.bounded:
             return None
@@ -382,6 +449,11 @@ class BashTool(AgentTool):
         exe = parts[0]
         if exe not in self.allowed_commands:
             return f"command not allowed: {exe!r}"
+
+        if self.script_dir is not None and self.is_python(exe):
+            err = self.validate_python_script(parts)
+            if err:
+                return err
 
         if exe in {"find", "bfs", "gfind"}:
             bad = next(
@@ -704,16 +776,32 @@ class WriteTool(AgentTool):
             return f"Error: {exc}"
 
 
+def resolve_script_dir(
+    root: Path, allowed: set, scripts_dir: Optional[str]
+) -> Optional[Path]:
+    """Directory python scripts must live in, or None if python is not allowed.
+
+    Falls back to DEFAULT_SCRIPT_DIR when `scripts_dir` is unset; raises
+    ValueError if it escapes `root`.
+    """
+    if not any(BashTool.is_python(cmd) for cmd in allowed):
+        return None
+    return AgentTool.resolve_within_root(root, scripts_dir or DEFAULT_SCRIPT_DIR)
+
+
 def make_tools(
     root: Path,
     bash_allow: Optional[set] = None,
     protected_paths: Optional[set] = None,
+    scripts_dir: Optional[str] = None,
 ) -> List[AgentTool]:
     """Create the default bounded toolset (read/glob/bash/edit/write).
 
     `bash_allow` extends the default bash allowlist with additional command names.
     `protected_paths` are resolved paths (e.g. the task file) that write/edit/bash
     may never target, even though they live inside `root`.
+    If `bash_allow` includes a python interpreter, python may only run .py files
+    under `scripts_dir` (workdir-relative, default DEFAULT_SCRIPT_DIR).
     """
     allowed = set(BashTool._DEFAULT_ALLOWED)
     if bash_allow:
@@ -727,6 +815,7 @@ def make_tools(
             bounded=True,
             allowed_commands=allowed,
             protected_paths=protected_paths,
+            script_dir=resolve_script_dir(root, allowed, scripts_dir),
         ),
         EditTool(root=root, protected_paths=protected_paths),
         WriteTool(root=root, protected_paths=protected_paths),
@@ -737,6 +826,7 @@ def make_readonly_tools(
     root: Path,
     bash_allow: Optional[set] = None,
     protected_paths: Optional[set] = None,
+    scripts_dir: Optional[str] = None,
 ) -> List[AgentTool]:
     """Create a bounded read-only toolset (read/glob/bash only).
 
@@ -754,6 +844,7 @@ def make_readonly_tools(
             bounded=True,
             allowed_commands=allowed,
             protected_paths=protected_paths,
+            script_dir=resolve_script_dir(root, allowed, scripts_dir),
         ),
     ]
 

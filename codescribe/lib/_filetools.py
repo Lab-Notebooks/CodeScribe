@@ -48,6 +48,8 @@ def load_chat_template(filepath: Path, *, return_meta: bool = False):
     Optional tool policy:
       [tools]
       bash = ["python3.8", "rg"]
+      protect = ["dev/approvals.toml"]
+      scripts_dir = "dev/scripts"   # where python scripts must live
 
     Validation rules:
       - Conversation must start with a 'user' message
@@ -59,7 +61,8 @@ def load_chat_template(filepath: Path, *, return_meta: bool = False):
     Returns:
       - return_meta=False (default): chat_template
       - return_meta=True: (chat_template, meta)
-        meta currently includes: {"tools": {"bash": [..]}}
+        meta currently includes:
+          {"tools": {"bash": [..], "protect": [..], "scripts_dir": str | None}}
     """
     path = Path(filepath)
     if path.suffix != ".toml":
@@ -93,7 +96,30 @@ def load_chat_template(filepath: Path, *, return_meta: bool = False):
                     "Use a bare command name only (e.g. 'python3.8'), no args or paths."
                 )
 
-        meta = {"tools": {"bash": bash_tools}}
+        # Workdir-relative paths/globs the agent may not modify (loop mode).
+        protect = tools_cfg.get("protect") or []
+        if not isinstance(protect, list) or not all(
+            isinstance(x, str) for x in protect
+        ):
+            raise TypeError(f"[tools].protect must be a list of strings in {filepath}")
+
+        # Workdir-relative directory allowlisted python may run scripts from
+        # (default: .codescribe/tmp, applied by make_tools).
+        scripts_dir = tools_cfg.get("scripts_dir")
+        if scripts_dir is not None and (
+            not isinstance(scripts_dir, str) or not scripts_dir.strip()
+        ):
+            raise TypeError(
+                f"[tools].scripts_dir must be a non-empty string in {filepath}"
+            )
+
+        meta = {
+            "tools": {
+                "bash": bash_tools,
+                "protect": protect,
+                "scripts_dir": scripts_dir,
+            }
+        }
 
     # --- Enforce triple single quotes for multi-line content ---
     bad_quotes = re.findall(r'content\s*=\s*"""', raw_text)

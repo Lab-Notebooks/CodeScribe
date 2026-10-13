@@ -105,6 +105,11 @@ The loop writes artifacts under `.codescribe/loop/`:
   - overwritten on each review phase
 - `review.toml`
   - review-phase event log
+- `rules.toml`
+  - active policy rules, resolved protected files, and rule parse problems
+  - rewritten whenever rules change; written for inspection only, never read
+    back (the in-memory rules are authoritative, so editing this file mid-run
+    has no effect)
 - `metadata/`
   - durable normalized per-phase telemetry files for plotting/comparison
     (tokens, iterations, wall time)
@@ -129,7 +134,24 @@ relay is still in memory.
 bash = ["rg", "python", "python3"]
 ```
 
-That `bash` list extends the bounded author-phase bash allowlist.
+That `bash` list extends the bounded author-phase bash allowlist. An optional
+`protect = [...]` list names files the agent may not modify; see
+[Policy](#policy-protected-files-and-binding-rules).
+
+If `bash` includes a python interpreter, python may only run `.py` files under
+one directory, so every snippet the author runs is kept on disk:
+
+```toml
+[tools]
+bash = ["python3"]
+scripts_dir = "dev/transformations/x/scripts"   # default: .codescribe/tmp
+```
+
+`python3 -c ...`, `python3 -m ...`, stdin and the REPL are refused, as is any
+script outside `scripts_dir`. If `scripts_dir` is not set, scripts go in
+`.codescribe/tmp` (never anywhere else). The author prompt names this directory
+and asks the author to write a check script there instead of running
+`python -m compileall .`. See [tools.md](tools.md#python-runs-only-from-a-scripts-directory).
 
 ## System prompt
 
@@ -254,7 +276,10 @@ blocker = ""
 item = "Concrete next step"
 ```
 
-The harness then reads `pending` and `blocker` from that file.
+It may also emit `[[rule]]` entries and a top-level `retire` list; see
+[Policy](#policy-protected-files-and-binding-rules).
+
+The harness then reads `pending`, `blocker`, `rule`, and `retire` from that file.
 
 ## Loop summaries
 
@@ -294,9 +319,81 @@ Current enforcement includes:
 - task file must be inside `workdir`,
 - file tools resolve paths within the root,
 - bash runs with a bounded allowlist,
-- review bash is even more restrictive.
+- review bash is even more restrictive,
+- protected files and binding rules (below).
 
 This is a policy layer, not an OS sandbox.
+
+## Policy: protected files and binding rules
+
+Prompt instructions alone do not hold for weaker models: an author told to
+"finish everything" will route around a human-approval gate if a tool lets it.
+The policy layer moves those constraints into the harness so they hold
+regardless of which model runs the loop.
+
+### Protected files
+
+The only task-file setting is one key in the existing `[tools]` table:
+
+```toml
+[tools]
+bash = ["python3"]
+protect = ["dev/transformations/x/approvals.toml", "dev/transformations/x/*.md"]
+```
+
+Entries are workdir-relative paths or globs. The task file itself is always
+protected. Like `bash`, `protect` is read once at startup and never re-read,
+because the task file sits inside the agent's writable root.
+
+
+- `write` and `edit` refuse protected paths, and bash refuses them as arguments
+  (author and review phases).
+- An allowlisted interpreter such as `python3` can still write anything, so the
+  harness snapshots protected files at the start of each author phase and
+  compares them after every author bash call and at phase end. Changes are
+  reverted (created files are removed), the bash result becomes an `Error:`
+  naming the files, and the change is recorded as a violation.
+- Violations are shown to the reviewer (as a blocker) and to the next author.
+- Humans should edit protected files (e.g. record approvals) while the loop is
+  stopped: the guard cannot tell a human's edit during an author phase from the
+  agent's, and will revert it.
+
+### Rules
+
+Each rule has `text` and optionally `deny_bash` (regex) and `protect` (path or
+glob). Every active rule is injected into the author task under
+`HARNESS-ENFORCED POLICY`, ahead of the pending steps it overrides. Enforcement
+differs by field:
+
+- `text` is guidance only: compliance depends on the model.
+- `deny_bash` is enforced: matching author bash commands are refused with
+  `Error: command refused by rule Rn`.
+- `protect` is enforced: the path joins the protected set.
+
+Rules are not written in the task file. The review agent adds them on the fly,
+turning each author deviation it sees into a rule, through `review_output.toml`:
+
+```toml
+retire = ["R5"]          # optional; review rules that no longer apply
+
+[[rule]]
+text = "Do not rewrite agent_log.md wholesale; append with edit."
+protect = ""
+deny_bash = ""
+```
+
+Safeguards against a weak reviewer:
+
+- `[tools].protect` paths cannot be unprotected by any rule,
+- protections only accumulate during a run (retiring a rule does not unprotect
+  its path),
+- invalid regexes and patterns that match every command are dropped (the rule
+  text is kept) and recorded under `problems` in `rules.toml`,
+- duplicate rule text is ignored, and at most 12 rules stay active
+  (the oldest are dropped first).
+
+The author prompt also treats a task-file stop condition or a binding rule as a
+hard blocker: the author reports `STATUS: INCOMPLETE` instead of working around it.
 
 ## Defaults currently exposed by the CLI
 

@@ -18,12 +18,23 @@ Persistent files (for inspection / crash-resume only):
   state.toml      — current loop index + phase
   author.toml     — raw event log for the most recent author phase
   review_output.toml — structured output from the review agent (pending items)
+  rules.toml      — active reviewer-added rules, for inspection
   metadata/       — durable normalized per-phase telemetry for plotting
+
+Policy (model-agnostic, enforced by the harness rather than by prompt compliance):
+  - Protected files: the task file plus [tools].protect. write/edit refuse
+    them, and after every author bash call (and at phase end) any change to
+    them is reverted and recorded as a violation.
+  - Rules: added/retired by the review agent via [[rule]] / retire in
+    review_output.toml. Every rule is injected into the
+    author task; a rule with `deny_bash` also makes the harness refuse matching
+    author bash commands, and a rule with `protect` adds a protected file.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import toml
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +48,9 @@ __all__ = [
     "load_state",
     "write_state",
     "LoopSummary",
+    "LoopRule",
+    "ProtectedFileGuard",
+    "GuardedBashTool",
     "build_system_prompt",
     "build_author_task",
     "build_review_task",
@@ -59,6 +73,7 @@ class LoopPaths:
     state_toml: Path
     author_toml: Path  # raw event log (overwritten each author phase)
     review_output_toml: Path  # review agent's structured output (overwritten each review)
+    rules_toml: Path  # active policy rules (written for inspection, never read back)
 
 
 def get_loop_paths(workdir: Path) -> LoopPaths:
@@ -70,6 +85,7 @@ def get_loop_paths(workdir: Path) -> LoopPaths:
         state_toml=run_dir / "state.toml",
         author_toml=run_dir / "author.toml",
         review_output_toml=run_dir / "review_output.toml",
+        rules_toml=run_dir / "rules.toml",
     )
 
 
@@ -121,6 +137,182 @@ def init_state(*, run_id: str, workdir: Path, task_file: Path) -> Dict[str, Any]
 
 
 @dataclass
+class LoopRule:
+    """A binding constraint on the author agent, added by the review agent.
+
+    `text` is always injected into the author task. `deny_bash` (regex) makes the
+    harness refuse matching author bash commands; `protect` (workdir-relative path
+    or glob) adds protected files.
+    """
+
+    id: str
+    text: str
+    deny_bash: str = ""
+    protect: str = ""
+    source: str = ""  # "review:<loop>"
+
+    def to_toml(self) -> Dict[str, Any]:
+        doc: Dict[str, Any] = {"id": self.id, "text": self.text, "source": self.source}
+        if self.deny_bash:
+            doc["deny_bash"] = self.deny_bash
+        if self.protect:
+            doc["protect"] = self.protect
+        return doc
+
+
+# Upper bound on active rules; the oldest are dropped first so a
+# runaway reviewer cannot grow the author prompt without limit.
+MAX_REVIEW_RULES = 12
+
+
+def parse_rules(
+    raw: Any, *, source: str, start_id: int
+) -> tuple[List[LoopRule], List[str]]:
+    """Parse rule entries (strings or tables) into LoopRules.
+
+    Returns (rules, problems). Invalid or over-broad `deny_bash` patterns are
+    dropped (the rule's text is kept) so a bad regex cannot brick the author.
+    """
+    rules: List[LoopRule] = []
+    problems: List[str] = []
+    if not isinstance(raw, list):
+        return rules, problems
+    next_id = start_id
+    for entry in raw:
+        if isinstance(entry, str):
+            entry = {"text": entry}
+        if not isinstance(entry, dict):
+            continue
+        text = str(entry.get("text") or "").strip()
+        if not text:
+            continue
+        deny = str(entry.get("deny_bash") or "").strip()
+        if deny:
+            try:
+                if re.search(deny, ""):
+                    problems.append(f"deny_bash {deny!r} matches every command; ignored")
+                    deny = ""
+            except re.error as exc:
+                problems.append(f"deny_bash {deny!r} is not a valid regex ({exc}); ignored")
+                deny = ""
+        rules.append(
+            LoopRule(
+                id=f"R{next_id}",
+                text=text,
+                deny_bash=deny,
+                protect=str(entry.get("protect") or "").strip(),
+                source=source,
+            )
+        )
+        next_id += 1
+    return rules, problems
+
+
+class ProtectedFileGuard:
+    """Snapshot protected files and revert any change to them.
+
+    Tool-level path checks cannot see what an allowlisted interpreter (e.g.
+    `python3 script.py`) does, so the guard compares file contents after each
+    author bash call and at phase end. This is tamper detection and repair,
+    not an OS sandbox.
+    """
+
+    def __init__(self, workdir: Path) -> None:
+        self.workdir = workdir
+        self.patterns: List[str] = []
+        self.saved: Dict[Path, Optional[bytes]] = {}
+        self.violations: List[str] = []
+
+    def add(self, pattern: str) -> None:
+        if pattern and pattern not in self.patterns:
+            self.patterns.append(pattern)
+
+    def resolve(self) -> List[Path]:
+        paths: List[Path] = []
+        for pattern in self.patterns:
+            if any(ch in pattern for ch in "*?["):
+                candidates = list(self.workdir.glob(pattern))
+            else:
+                candidates = [self.workdir / pattern]
+            for p in candidates:
+                try:
+                    p = ensure_within_workdir(p, self.workdir)
+                except ValueError:
+                    continue
+                if p not in paths:
+                    paths.append(p)
+        return paths
+
+    @staticmethod
+    def read_bytes(path: Path) -> Optional[bytes]:
+        try:
+            return path.read_bytes() if path.is_file() else None
+        except OSError:
+            return None
+
+    def snapshot(self) -> None:
+        self.saved = {p: self.read_bytes(p) for p in self.resolve()}
+        self.violations = []
+
+    def restore_changes(self) -> List[str]:
+        """Revert protected files to the snapshot; return what was reverted."""
+        reverted: List[str] = []
+        for path, before in self.saved.items():
+            after = self.read_bytes(path)
+            if after == before:
+                continue
+            rel = str(path.relative_to(self.workdir))
+            try:
+                if before is None:
+                    path.unlink()
+                    reverted.append(f"{rel} (created; removed)")
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(before)
+                    reverted.append(
+                        f"{rel} ({'deleted' if after is None else 'modified'}; restored)"
+                    )
+            except OSError as exc:
+                reverted.append(f"{rel} (changed; restore FAILED: {exc})")
+        self.violations.extend(reverted)
+        return reverted
+
+
+class GuardedBashTool(lib.AgentTool):
+    """Author bash tool wrapper that enforces deny rules and protected files."""
+
+    def __init__(
+        self, inner: lib.AgentTool, *, rules: List[LoopRule], guard: ProtectedFileGuard
+    ) -> None:
+        super().__init__(
+            name=inner.name,
+            description=inner.description,
+            parameters=inner.parameters,
+            enabled=inner.enabled,
+        )
+        self.inner = inner
+        self.rules = rules
+        self.guard = guard
+
+    def run(self, args: Dict[str, Any]) -> str:
+        command = str(args.get("command") or "")
+        for rule in self.rules:
+            if rule.deny_bash and re.search(rule.deny_bash, command):
+                return f"Error: command refused by rule {rule.id}: {rule.text}"
+        output = self.inner.run(args)
+        reverted = self.guard.restore_changes()
+        if reverted:
+            return (
+                "Error: this command changed protected file(s); the harness reverted "
+                "them and recorded a violation: "
+                + "; ".join(reverted)
+                + "\n\n"
+                + output
+            )
+        return output
+
+
+@dataclass
 class LoopSummary:
     """Harness-computed summary of one author phase.
 
@@ -137,6 +329,9 @@ class LoopSummary:
     rejected: List[str] = field(
         default_factory=list
     )  # "tool(args): reason" — attempted, never executed
+    violations: List[str] = field(
+        default_factory=list
+    )  # protected-file changes the harness reverted
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     total_cache_creation_tokens: int = 0
@@ -174,12 +369,16 @@ class PromptLoopRunner:
         self.loop_summaries: List[LoopSummary] = []
         self.review_summaries: List[LoopSummary] = []
         self.pending_items: List[str] = []
+        self.rules: List[LoopRule] = []
+        self.rule_problems: List[str] = []
+        self.guard = ProtectedFileGuard(self.workdir_path)
         self.loops_completed = 0
         self.task_mtime: float = 0.0
         self.phase_metadata_files: List[Path] = []
 
         self.load_task_context()
         self.initialize_paths()
+        self.write_rules()
         self.initialize_run_record()
         self.initialize_loop_state()
 
@@ -187,11 +386,49 @@ class PromptLoopRunner:
         self.chat_history, meta = lib.load_chat_template(
             self.task_path, return_meta=True
         )
-        bash_allow = set((meta.get("tools") or {}).get("bash") or [])
-        self.tools = lib.make_tools(
+        tools_cfg = meta.get("tools") or {}
+        self.bash_allow = set(tools_cfg.get("bash") or [])
+        self.scripts_dir = tools_cfg.get("scripts_dir")
+        self.python_scripts_dir()  # fail fast if scripts_dir escapes the workdir
+        # The task file is always protected; [tools].protect adds more.
+        self.guard.add(self.task_rel)
+        for pattern in tools_cfg.get("protect") or []:
+            self.guard.add(pattern)
+
+    def protected_paths(self) -> set:
+        return set(self.guard.resolve()) | {self.task_path.resolve()}
+
+    def make_author_tools(self) -> List[lib.AgentTool]:
+        # Rebuilt every phase so reviewer-added protections take effect.
+        tools = lib.make_tools(
             self.workdir_path,
-            bash_allow=bash_allow,
-            protected_paths={self.task_path.resolve()},
+            bash_allow=self.bash_allow,
+            protected_paths=self.protected_paths(),
+            scripts_dir=self.scripts_dir,
+        )
+        return [
+            GuardedBashTool(t, rules=self.rules, guard=self.guard)
+            if t.name == "bash"
+            else t
+            for t in tools
+        ]
+
+    def python_scripts_dir(self) -> str:
+        """Workdir-relative dir allowlisted python must run from ("" if no python)."""
+        allowed = set(lib.BashTool._DEFAULT_ALLOWED) | self.bash_allow
+        path = lib.resolve_script_dir(self.workdir_path, allowed, self.scripts_dir)
+        return str(path.relative_to(self.workdir_path)) if path else ""
+
+    def write_rules(self) -> None:
+        lib.atomic_write_toml(
+            self.paths.rules_toml,
+            {
+                "rule": [r.to_toml() for r in self.rules],
+                "protected": [
+                    str(p.relative_to(self.workdir_path)) for p in self.guard.resolve()
+                ],
+                "problems": list(self.rule_problems),
+            },
         )
 
     def initialize_paths(self) -> None:
@@ -272,7 +509,7 @@ class PromptLoopRunner:
     def build_author_agent(self, logging: lib.ToolLogSink) -> lib.Agent:
         return lib.Agent(
             self.neural_model,
-            tools=self.tools,
+            tools=self.make_author_tools(),
             max_iterations=self.agent_iterations,
             show_diagnostics=self.verbose,
             logging=logging,
@@ -305,15 +542,26 @@ class PromptLoopRunner:
             agent_loops=self.agent_loops,
             loop_summaries=self.loop_summaries,
             pending_items=self.pending_items,
+            rules=self.rules,
+            protected=[
+                str(p.relative_to(self.workdir_path)) for p in self.guard.resolve()
+            ],
+            python_scripts_dir=self.python_scripts_dir(),
         )
 
+        self.guard.snapshot()
         phase_timer = lib.Timer()
         author_result = author_agent.run(
             author_task, system=self.system, chat_history=self.chat_history
         )
         phase_duration_s = phase_timer.ms / 1000.0
+        # Catch-all for changes not made through bash (e.g. background processes).
+        self.guard.restore_changes()
         author_answer = author_result.final_text or ""
         loop_summary = loop_summary_from_result(loop_idx, author_result)
+        loop_summary.violations = list(self.guard.violations)
+        if self.verbose and loop_summary.violations:
+            print("  ⚠ protected files reverted: " + "; ".join(loop_summary.violations))
 
         self.loop_summaries.append(loop_summary)
         self.pending_items = extract_pending_items(author_answer)
@@ -351,13 +599,18 @@ class PromptLoopRunner:
             "env",
             "rg",
         }
-        review_tools = [t for t in self.tools if t.name in ("read", "glob", "write")]
+        protected = self.protected_paths()
+        review_tools = [
+            t
+            for t in lib.make_tools(self.workdir_path, protected_paths=protected)
+            if t.name in ("read", "glob", "write")
+        ]
         review_tools.append(
             lib.BashTool(
                 cwd=self.workdir_path,
                 bounded=True,
                 allowed_commands=review_bash_allow,
-                protected_paths={self.task_path.resolve()},
+                protected_paths=protected,
             )
         )
         return review_tools
@@ -381,10 +634,39 @@ class PromptLoopRunner:
             ]
             self.pending_items = [x for x in reviewed_items if x]
 
+        self.apply_review_rules(review_data)
+
         blocker = review_data.get("blocker", "")
         if not self.pending_items and not blocker:
             return True
         return False
+
+    def apply_review_rules(self, review_data: Dict[str, Any]) -> None:
+        """Retire and add reviewer rules."""
+        retire = review_data.get("retire") or []
+        if isinstance(retire, list):
+            retire_ids = {str(x).strip() for x in retire}
+            self.rules[:] = [r for r in self.rules if r.id not in retire_ids]
+
+        loop_no = review_data.get("loop", "?")
+        next_id = (
+            max((int(r.id[1:]) for r in self.rules if r.id[1:].isdigit()), default=0)
+            + 1
+        )
+        new_rules, problems = parse_rules(
+            review_data.get("rule"), source=f"review:{loop_no}", start_id=next_id
+        )
+        known = {r.text for r in self.rules}
+        self.rules.extend(r for r in new_rules if r.text not in known)
+        self.rule_problems.extend(problems)
+
+        del self.rules[: max(0, len(self.rules) - MAX_REVIEW_RULES)]
+
+        # Protections only accumulate: retiring a rule does not unprotect a file
+        # mid-run, so a confused reviewer cannot reopen a human-owned path.
+        for rule in self.rules:
+            self.guard.add(rule.protect)
+        self.write_rules()
 
     def run_review_phase(
         self, loop_idx: int, loop_summary: LoopSummary, exec_answer: str
@@ -402,6 +684,10 @@ class PromptLoopRunner:
             loop_index=loop_idx,
             loop_summary=loop_summary,
             exec_answer=exec_answer or "",
+            rules=self.rules,
+            protected=[
+                str(p.relative_to(self.workdir_path)) for p in self.guard.resolve()
+            ],
         )
 
         phase_timer = lib.Timer()
@@ -595,6 +881,11 @@ def format_loop_context(
             parts.append("errors: " + "; ".join(last.errors[:3]))
         if parts:
             lines.append("Last loop — " + " | ".join(parts) + ".")
+        if last.violations:
+            lines.append(
+                "VIOLATION last loop — you changed protected files and the harness "
+                "reverted them: " + "; ".join(last.violations) + ". Do not repeat this."
+            )
 
     if pending_items:
         lines.append("Pending next steps:")
@@ -608,6 +899,27 @@ def format_loop_context(
     return "\n".join(lines)
 
 
+def format_policy_block(rules: List[LoopRule], protected: List[str]) -> str:
+    """Render protected files and binding rules for either phase's task."""
+    if not rules and not protected:
+        return ""
+    lines = ["HARNESS-ENFORCED POLICY"]
+    if protected:
+        lines.append(
+            "Protected files (read-only; any change is reverted and recorded as a "
+            "violation): " + ", ".join(protected)
+        )
+    if rules:
+        lines.append(
+            "Binding rules (they override pending steps and any instruction to keep "
+            "going):"
+        )
+        for r in rules:
+            extra = f" [bash matching /{r.deny_bash}/ is refused]" if r.deny_bash else ""
+            lines.append(f"- {r.id} ({r.source}): {r.text}{extra}")
+    return "\n".join(lines)
+
+
 def build_author_task(
     *,
     workdir: Path,
@@ -617,6 +929,9 @@ def build_author_task(
     agent_loops: int,
     loop_summaries: List[LoopSummary],
     pending_items: List[str],
+    rules: Optional[List[LoopRule]] = None,
+    protected: Optional[List[str]] = None,
+    python_scripts_dir: str = "",
 ) -> str:
     context = format_loop_context(
         loop_idx=loop_idx,
@@ -624,6 +939,9 @@ def build_author_task(
         loop_summaries=loop_summaries,
         pending_items=pending_items,
     )
+    policy = format_policy_block(rules or [], protected or [])
+    if policy:
+        context = f"{context}\n\n{policy}"
     if loop_idx == 1 and task_content:
         # Pre-inject the spec so the agent skips the read-to-orient round-trip.
         orient_step = (
@@ -637,6 +955,15 @@ def build_author_task(
             "1. The specification and all prior work are already summarised above — "
             "do NOT re-read the task file or re-glob the workspace to orient yourself.\n"
         )
+    if python_scripts_dir:
+        fallback_check = (
+            f"   If none exists, write a check script under {python_scripts_dir}/ (e.g. one\n"
+            "   calling compileall) and run it.\n"
+            f"   Python only runs script files under {python_scripts_dir}/ (no -c/-m/stdin):\n"
+            "   write every python snippet there first so it is kept for provenance.\n"
+        )
+    else:
+        fallback_check = "   If none exists, run `python -m compileall .`.\n"
     return (
         f"{context}\n\n"
         f"Working directory: {workdir}\n"
@@ -654,8 +981,12 @@ def build_author_task(
         "4. Before each set of tool calls, write one or two sentences stating what you are about to do and why.\n"
         "5. Inspect the current state of relevant files before editing them.\n"
         "6. After each meaningful change, run the closest available check (tests, lint, typecheck).\n"
-        "   If none exists, run `python -m compileall .`. Do not defer all validation to the end.\n"
-        "7. Continue until every task is implemented AND the checks pass, or you hit a hard blocker.\n\n"
+        + fallback_check
+        + "   Do not defer all validation to the end.\n"
+        "7. Continue until every task is implemented AND the checks pass, or you hit a hard blocker.\n"
+        "   A stop condition in the task file or a binding rule (e.g. waiting for human\n"
+        "   approval) IS a hard blocker: stop, report STATUS: INCOMPLETE, and name it in\n"
+        "   NEXT STEPS. Never work around it.\n\n"
         "Finish with <final_answer> that includes, in this order:\n"
         "- A status line of the EXACT form `STATUS: COMPLETE` if every task is implemented and all\n"
         "  checks pass, otherwise `STATUS: INCOMPLETE`.\n"
@@ -674,6 +1005,8 @@ def build_review_task(
     loop_index: int,
     loop_summary: LoopSummary,
     exec_answer: str = "",
+    rules: Optional[List[LoopRule]] = None,
+    protected: Optional[List[str]] = None,
 ) -> str:
     # Build a text representation of the harness-computed summary so the
     # review agent has verified facts without needing to parse any transcript.
@@ -714,6 +1047,15 @@ def build_review_task(
             rejected_lines.append(f"  {r}")
         rejected_block = "\n".join(rejected_lines)
 
+    violation_block = ""
+    if loop_summary.violations:
+        violation_block = "\n".join(
+            ["## Protected-file violations (harness reverted these changes)"]
+            + [f"  {v}" for v in loop_summary.violations]
+        )
+
+    policy_block = format_policy_block(rules or [], protected or [])
+
     return (
         f"Working directory: {workdir}\n"
         f"Task file: {task_rel} (read-only)\n"
@@ -721,6 +1063,8 @@ def build_review_task(
         "PHASE: REVIEW\n\n"
         f"{verified_block}\n\n"
         + (f"{rejected_block}\n\n" if rejected_block else "")
+        + (f"{violation_block}\n\n" if violation_block else "")
+        + (f"{policy_block}\n\n" if policy_block else "")
         + (
             f"\n[Author agent report — loop {loop_index}]\n\n{exec_answer}\n\n"
             if exec_answer
@@ -736,15 +1080,28 @@ def build_review_task(
         "   ```toml\n"
         f"   loop = {loop_index}\n"
         '   summary = "One paragraph describing what actually happened."\n'
-        '   blocker = "Main current blocker, or empty string if none."\n\n'
+        '   blocker = "Main current blocker, or empty string if none."\n'
+        '   retire = []  # optional ids of earlier review rules that no longer apply\n\n'
         "   [[pending]]\n"
-        '   item = "First concrete next step"\n'
+        '   item = "First concrete next step"\n\n'
+        "   # Optional: binding rules for the author, enforced from the next loop on.\n"
+        "   [[rule]]\n"
+        '   text = "What the author must or must not do, and why"\n'
+        '   deny_bash = ""   # optional regex; matching author bash commands are refused\n'
+        '   protect = ""     # optional workdir-relative path the author must not change\n'
         "   ```\n\n"
+        "3. Check the author against the task file's rules and the binding rules above.\n"
+        "   For every deviation, add a [[rule]] that would prevent it next loop. Prefer\n"
+        "   deny_bash/protect when a command or file was the cause: those are enforced by\n"
+        "   the harness, plain text is not. Do not re-add a rule that is already listed.\n\n"
         "Rules:\n"
+        "- Any protected-file violation or binding-rule breach is a blocker.\n"
         '- If tests passed and no errors are listed above, set blocker = "" and leave pending empty.\n'
         "- pending items must be concrete and actionable (not 'continue working').\n"
+        "- Never put an action into pending that a task-file stop condition or a binding rule forbids.\n"
         "- Limit to 5 pending items maximum.\n\n"
-        "Finish with <final_answer> confirming you wrote the review output file.\n"
+        "After writing the review output file, reply with <final_answer> as plain text.\n"
+        "Do not call any more tools to confirm the write.\n"
     )
 
 
