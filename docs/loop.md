@@ -138,18 +138,21 @@ That `bash` list extends the bounded author-phase bash allowlist. An optional
 `protect = [...]` list names files the agent may not modify; see
 [Policy](#policy-protected-files-and-binding-rules).
 
-If `bash` includes a python interpreter, python may only run `.py` files under
-one directory, so every snippet the author runs is kept on disk:
+An optional `memory` key sets the memory layer (`mem` for short), a
+workdir-relative directory for durable agent artifacts. If `bash` includes a
+python interpreter, python may only run `.py` files under `<mem>/scripts`, so
+every snippet the author runs is kept on disk:
 
 ```toml
 [tools]
 bash = ["python3"]
-scripts_dir = "dev/transformations/x/scripts"   # default: .codescribe/tmp
+memory = "dev/transformations/x/mem"   # default: .codescribe/mem
 ```
 
 `python3 -c ...`, `python3 -m ...`, stdin and the REPL are refused, as is any
-script outside `scripts_dir`. If `scripts_dir` is not set, scripts go in
-`.codescribe/tmp` (never anywhere else). The author prompt names this directory
+script outside `<mem>/scripts`. The `scripts` subdirectory is fixed; only
+`memory` is configurable. If `memory` is not set, scripts go in
+`.codescribe/mem/scripts` (never anywhere else). The author prompt names this directory
 and asks the author to write a check script there instead of running
 `python -m compileall .`. See [tools.md](tools.md#python-runs-only-from-a-scripts-directory).
 

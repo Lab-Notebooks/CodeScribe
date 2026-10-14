@@ -377,17 +377,17 @@ def load_agent_task_file(task_file: Union[Path, str], workdir: Path):
 
     Uses the same reader as the loop command: the chat template becomes the
     agent's prior conversation, and the optional `[tools] bash = [...]` section
-    extends the bounded bash allowlist (`scripts_dir` sets where allowlisted
-    python may run scripts from). The task file must live inside *workdir* and
+    extends the bounded bash allowlist (`memory` sets the memory layer; allowlisted
+    python may only run scripts from `<memory>/scripts`). The task file must live inside *workdir* and
     is returned so callers can protect it from writes.
 
-    Returns (task_path, chat_history, bash_allow, scripts_dir).
+    Returns (task_path, chat_history, bash_allow, memory).
     """
     task_path = lib.ensure_within_workdir(Path(task_file), workdir)
     chat_history, meta = lib.load_chat_template(task_path, return_meta=True)
     tools_cfg = meta.get("tools") or {}
     bash_allow = set(tools_cfg.get("bash") or [])
-    return task_path, chat_history, bash_allow, tools_cfg.get("scripts_dir")
+    return task_path, chat_history, bash_allow, tools_cfg.get("memory")
 
 
 def build_agent_task(*, workdir: Path, task_rel: str) -> str:
@@ -444,11 +444,11 @@ def prompt_agent(
     chat_history = None
     bash_allow = set()
     protected_paths = set()
-    scripts_dir = None
+    memory = None
     agent_task = task
 
     if task_file is not None:
-        task_path, chat_history, bash_allow, scripts_dir = load_agent_task_file(
+        task_path, chat_history, bash_allow, memory = load_agent_task_file(
             task_file, root
         )
         protected_paths = {task_path}
@@ -470,7 +470,7 @@ def prompt_agent(
         root,
         bash_allow=bash_allow,
         protected_paths=protected_paths,
-        scripts_dir=scripts_dir,
+        memory=memory,
     )
 
     coding_agent = lib.Agent(

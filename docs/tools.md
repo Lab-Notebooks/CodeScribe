@@ -129,7 +129,7 @@ When the allowlist includes a python interpreter (`python`, `python3`,
 `python3.11`, `ipython`, `pypy3`, ...), bounded bash only accepts
 
 ```
-python3 [safe flags] <scripts_dir>/<name>.py [args...]
+python3 [safe flags] <mem>/scripts/<name>.py [args...]
 ```
 
 so every piece of python the agent executes is left on disk as a file, which
@@ -139,9 +139,10 @@ targets, scripts outside the directory (symlinks are resolved), and missing
 files are all rejected with a hint to write the script first. Allowed flags:
 `-u -B -I -E -s -S -O -OO -q -b -bb -P`.
 
-`scripts_dir` comes from the task file's `[tools].scripts_dir`. If it is not
-set, it falls back to `.codescribe/tmp` (`DEFAULT_SCRIPT_DIR`). It must
-resolve inside the workdir.
+`mem` is the memory layer, set by the task file's `[tools].memory`. If it is
+not set, it falls back to `.codescribe/mem` (`DEFAULT_MEMORY_DIR`). The
+`scripts` subdirectory (`SCRIPTS_SUBDIR`) is hardcoded. The resulting
+directory must resolve inside the workdir.
 
 The check only looks at how python is invoked. Other allowlisted launchers
 (e.g. `env`, `uv`, `make`) can still start python some other way.
@@ -200,7 +201,7 @@ When bounded, the target path must resolve within the configured root.
 
 ## Toolset constructors
 
-### `make_tools(root, bash_allow=None, protected_paths=None, scripts_dir=None)`
+### `make_tools(root, bash_allow=None, protected_paths=None, memory=None)`
 
 Returns the default bounded toolset:
 
@@ -211,10 +212,10 @@ Returns the default bounded toolset:
 - `write`
 
 `bash_allow` extends the default bounded-bash allowlist. If it includes a
-python interpreter, python is restricted to scripts under `scripts_dir`
-(default `.codescribe/tmp`); see above.
+python interpreter, python is restricted to scripts under `<memory>/scripts`
+(default `.codescribe/mem/scripts`); see above.
 
-### `make_readonly_tools(root, bash_allow=None, protected_paths=None, scripts_dir=None)`
+### `make_readonly_tools(root, bash_allow=None, protected_paths=None, memory=None)`
 
 Returns the bounded read-only toolset:
 

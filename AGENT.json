@@ -38,7 +38,7 @@
       "Bounded mode is a practical constraint layer, not an OS sandbox.", 
       "Bounded bash uses an allowlist and rejects shell metacharacters; some commands will fail by design.", 
       "The loop task file can extend the bash allowlist via a [tools] bash = [...] TOML section.", 
-      "If [tools] bash allowlists a python interpreter, python may only run .py scripts under [tools] scripts_dir (default .codescribe/tmp); -c, -m, stdin and the REPL are rejected so executed code is kept on disk for provenance.",
+      "If [tools] bash allowlists a python interpreter, python may only run .py scripts under <mem>/scripts, where mem is the [tools] memory layer (default .codescribe/mem); -c, -m, stdin and the REPL are rejected so executed code is kept on disk for provenance.",
       "TOML diagnostic logs include tool_start (with model_reasoning) and tool_end (with output_preview) events for post-run inspection.",
       "Agent hard limits per run: 120 total tool calls, 10 per iteration, 2 repeat-call attempts (read gets 3x). After 3 consecutive all-error iterations the agent is nudged to emit a BLOCKED answer.",
       "Tool outputs are capped at 8000 chars in message history; truncated output includes a paging hint (read(path, offset=N)).",

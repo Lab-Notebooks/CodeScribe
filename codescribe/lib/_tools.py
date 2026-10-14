@@ -30,13 +30,16 @@ __all__ = [
     "make_tools",
     "make_readonly_tools",
     "DEFAULT_TOOLS",
-    "DEFAULT_SCRIPT_DIR",
+    "DEFAULT_MEMORY_DIR",
+    "SCRIPTS_SUBDIR",
     "resolve_script_dir",
 ]
 
-# Fallback location for python scripts when a task file allowlists python but
-# does not set [tools].scripts_dir (workdir-relative).
-DEFAULT_SCRIPT_DIR = ".codescribe/tmp"
+# Memory layer ("mem"): workdir-relative directory for durable agent artifacts,
+# used when a task file does not set [tools].memory.
+DEFAULT_MEMORY_DIR = ".codescribe/mem"
+# Allowlisted python may only run scripts under <mem>/scripts (not configurable).
+SCRIPTS_SUBDIR = "scripts"
 
 
 class AgentTool:
@@ -777,23 +780,24 @@ class WriteTool(AgentTool):
 
 
 def resolve_script_dir(
-    root: Path, allowed: set, scripts_dir: Optional[str]
+    root: Path, allowed: set, memory: Optional[str]
 ) -> Optional[Path]:
     """Directory python scripts must live in, or None if python is not allowed.
 
-    Falls back to DEFAULT_SCRIPT_DIR when `scripts_dir` is unset; raises
-    ValueError if it escapes `root`.
+    Always `<mem>/scripts`, where mem is `memory` or DEFAULT_MEMORY_DIR when
+    unset; raises ValueError if it escapes `root`.
     """
     if not any(BashTool.is_python(cmd) for cmd in allowed):
         return None
-    return AgentTool.resolve_within_root(root, scripts_dir or DEFAULT_SCRIPT_DIR)
+    mem = memory or DEFAULT_MEMORY_DIR
+    return AgentTool.resolve_within_root(root, str(Path(mem) / SCRIPTS_SUBDIR))
 
 
 def make_tools(
     root: Path,
     bash_allow: Optional[set] = None,
     protected_paths: Optional[set] = None,
-    scripts_dir: Optional[str] = None,
+    memory: Optional[str] = None,
 ) -> List[AgentTool]:
     """Create the default bounded toolset (read/glob/bash/edit/write).
 
@@ -801,7 +805,8 @@ def make_tools(
     `protected_paths` are resolved paths (e.g. the task file) that write/edit/bash
     may never target, even though they live inside `root`.
     If `bash_allow` includes a python interpreter, python may only run .py files
-    under `scripts_dir` (workdir-relative, default DEFAULT_SCRIPT_DIR).
+    under `<memory>/scripts` (memory is workdir-relative, default
+    DEFAULT_MEMORY_DIR).
     """
     allowed = set(BashTool._DEFAULT_ALLOWED)
     if bash_allow:
@@ -815,7 +820,7 @@ def make_tools(
             bounded=True,
             allowed_commands=allowed,
             protected_paths=protected_paths,
-            script_dir=resolve_script_dir(root, allowed, scripts_dir),
+            script_dir=resolve_script_dir(root, allowed, memory),
         ),
         EditTool(root=root, protected_paths=protected_paths),
         WriteTool(root=root, protected_paths=protected_paths),
@@ -826,7 +831,7 @@ def make_readonly_tools(
     root: Path,
     bash_allow: Optional[set] = None,
     protected_paths: Optional[set] = None,
-    scripts_dir: Optional[str] = None,
+    memory: Optional[str] = None,
 ) -> List[AgentTool]:
     """Create a bounded read-only toolset (read/glob/bash only).
 
@@ -844,7 +849,7 @@ def make_readonly_tools(
             bounded=True,
             allowed_commands=allowed,
             protected_paths=protected_paths,
-            script_dir=resolve_script_dir(root, allowed, scripts_dir),
+            script_dir=resolve_script_dir(root, allowed, memory),
         ),
     ]
 

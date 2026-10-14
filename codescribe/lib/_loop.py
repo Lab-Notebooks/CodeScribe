@@ -388,8 +388,8 @@ class PromptLoopRunner:
         )
         tools_cfg = meta.get("tools") or {}
         self.bash_allow = set(tools_cfg.get("bash") or [])
-        self.scripts_dir = tools_cfg.get("scripts_dir")
-        self.python_scripts_dir()  # fail fast if scripts_dir escapes the workdir
+        self.memory = tools_cfg.get("memory")
+        self.python_scripts_dir()  # fail fast if memory escapes the workdir
         # The task file is always protected; [tools].protect adds more.
         self.guard.add(self.task_rel)
         for pattern in tools_cfg.get("protect") or []:
@@ -404,7 +404,7 @@ class PromptLoopRunner:
             self.workdir_path,
             bash_allow=self.bash_allow,
             protected_paths=self.protected_paths(),
-            scripts_dir=self.scripts_dir,
+            memory=self.memory,
         )
         return [
             GuardedBashTool(t, rules=self.rules, guard=self.guard)
@@ -416,7 +416,7 @@ class PromptLoopRunner:
     def python_scripts_dir(self) -> str:
         """Workdir-relative dir allowlisted python must run from ("" if no python)."""
         allowed = set(lib.BashTool._DEFAULT_ALLOWED) | self.bash_allow
-        path = lib.resolve_script_dir(self.workdir_path, allowed, self.scripts_dir)
+        path = lib.resolve_script_dir(self.workdir_path, allowed, self.memory)
         return str(path.relative_to(self.workdir_path)) if path else ""
 
     def write_rules(self) -> None:

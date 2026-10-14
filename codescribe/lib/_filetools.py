@@ -49,7 +49,7 @@ def load_chat_template(filepath: Path, *, return_meta: bool = False):
       [tools]
       bash = ["python3.8", "rg"]
       protect = ["dev/approvals.toml"]
-      scripts_dir = "dev/scripts"   # where python scripts must live
+      memory = "dev/mem"   # memory layer; python scripts must live in <memory>/scripts
 
     Validation rules:
       - Conversation must start with a 'user' message
@@ -62,7 +62,7 @@ def load_chat_template(filepath: Path, *, return_meta: bool = False):
       - return_meta=False (default): chat_template
       - return_meta=True: (chat_template, meta)
         meta currently includes:
-          {"tools": {"bash": [..], "protect": [..], "scripts_dir": str | None}}
+          {"tools": {"bash": [..], "protect": [..], "memory": str | None}}
     """
     path = Path(filepath)
     if path.suffix != ".toml":
@@ -103,21 +103,18 @@ def load_chat_template(filepath: Path, *, return_meta: bool = False):
         ):
             raise TypeError(f"[tools].protect must be a list of strings in {filepath}")
 
-        # Workdir-relative directory allowlisted python may run scripts from
-        # (default: .codescribe/tmp, applied by make_tools).
-        scripts_dir = tools_cfg.get("scripts_dir")
-        if scripts_dir is not None and (
-            not isinstance(scripts_dir, str) or not scripts_dir.strip()
-        ):
-            raise TypeError(
-                f"[tools].scripts_dir must be a non-empty string in {filepath}"
-            )
+        # Workdir-relative memory layer ("mem"); allowlisted python may only run
+        # scripts from <mem>/scripts (default mem: .codescribe/mem, applied by
+        # make_tools).
+        memory = tools_cfg.get("memory")
+        if memory is not None and (not isinstance(memory, str) or not memory.strip()):
+            raise TypeError(f"[tools].memory must be a non-empty string in {filepath}")
 
         meta = {
             "tools": {
                 "bash": bash_tools,
                 "protect": protect,
-                "scripts_dir": scripts_dir,
+                "memory": memory,
             }
         }
 
