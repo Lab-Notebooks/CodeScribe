@@ -29,29 +29,29 @@ The implementation is centered on `PromptLoopRunner`.
 │     │ - Logs: .codescribe/loop/author.toml        │    │
 │     └─────────────────────────────────────────────┘    │
 │                    │                                    │
-│                    ├─→ STATUS: COMPLETE? ──→ STOP      │
+│  3. Harness records workspace diff, runs [check]       │
 │                    │                                    │
-│                    └─→ INCOMPLETE                       │
+│                    ├─→ COMPLETE + check passes? ──→ STOP│
+│                    │                                    │
+│  4. Build LoopSummary from author RunResult            │
 │                         │                               │
-│  3. Build LoopSummary from author RunResult            │
-│                         │                               │
-│  4. ┌─────────────────────────────────────────────┐    │
+│  5. ┌─────────────────────────────────────────────┐    │
 │     │ REVIEW PHASE                                │    │
 │     │ - Fresh Agent with read/glob/write/bash     │    │
-│     │ - Verifies author claims                    │    │
+│     │ - Judges diff + check against the spec      │    │
 │     │ - Writes: review_output.toml                │    │
 │     │ - Logs: .codescribe/loop/review.toml        │    │
 │     └─────────────────────────────────────────────┘    │
 │                    │                                    │
-│                    ├─→ No pending + no blocker? ──→ STOP│
-│                    │                                    │
+│                    ├─→ Clean review + check passes? → STOP│
+│                    ├─→ No progress for 2 loops? ──→ STOP│
 │                    └─→ Continue to next loop iteration  │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
 ```
 
 Cross-loop state carried in-memory: `loop_summaries`, `review_summaries`,
-`pending_items`. Injected into next author phase task prompt.
+`items`, `blocker`, `scores`. Injected into next author phase task prompt.
 
 ## Current author/review model
 
@@ -59,11 +59,11 @@ For each loop iteration:
 
 1. Reload task metadata if the task file changed.
 2. Run an author-phase agent.
-3. Build a harness-computed `LoopSummary` from the author `RunResult`.
-4. If the author agent reported `STATUS: COMPLETE`, stop early.
+3. Record the workspace diff and run `[check]`.
+4. If the author reported `STATUS: COMPLETE` and the check passed, stop.
 5. Otherwise run a review-phase agent.
-6. Read `review_output.toml` and update pending items.
-7. Stop early if review reports no pending items and no blocker.
+6. Read `review_output.toml`; update items, blocker and rules.
+7. Score the loop; stop if complete or stalled.
 
 Important correction:
 
@@ -78,7 +78,9 @@ files:
 
 - `loop_summaries`
 - `review_summaries`
-- `pending_items`
+- `items` (open review items with stable ids)
+- `blocker`
+- `scores`
 - `loops_completed`
 
 The harness injects these summaries back into later prompts.
@@ -91,7 +93,8 @@ The loop writes artifacts under `.codescribe/loop/`:
   - run metadata
   - configured model and limits
   - cumulative token counters
-  - `loops_completed`
+  - `loops_completed`, `stop_reason` (`complete`, `stalled`, `max_loops`)
+  - `[[score]]` per loop: `changed`, `check_passed`, `resolved`, `open_items`, `progress`
 - `state.toml`
   - current `run_id`, `loop_index`, and `phase`
   - `workdir`
@@ -102,7 +105,7 @@ The loop writes artifacts under `.codescribe/loop/`:
   - overwritten at the start of each author phase
 - `review_output.toml`
   - structured output from the review agent
-  - overwritten on each review phase
+  - deleted before each review phase, so a missing write is never read as stale output
 - `review.toml`
   - review-phase event log
 - `rules.toml`
@@ -156,9 +159,53 @@ script outside `<mem>/scripts`. The `scripts` subdirectory is fixed; only
 and asks the author to write a check script there instead of running
 `python -m compileall .`. See [tools.md](tools.md#python-runs-only-from-a-scripts-directory).
 
+## Convergence
+
+The loop is an optimization: the author proposes, the harness measures, the
+reviewer critiques. Convergence is decided by the harness, not by agent
+self-report.
+
+### Check
+
+```toml
+[check]
+command = "pytest -q"   # argv, no shell; exit 0 means pass
+timeout = 600           # seconds (default 600)
+```
+
+The harness runs the check after every author phase. Its verdict and output
+tail go to the reviewer (always) and to the next author (on failure). Like
+`[tools]`, `[check]` is read once at startup. Without a check, completion rests
+on a clean review.
+
+### Feedback
+
+- The reviewer gets the phase's workspace diff, taken from git trees built with
+  a throwaway index (untracked files included, `.codescribe/` excluded, the
+  user's staging area untouched). Capped at 20000 chars. Outside git, no diff.
+- The next author gets the check result, the reviewer's `blocker`, and the open
+  review items with their ids.
+- Both phases see the task's chat as conversation; the spec is never injected twice.
+
+### Items
+
+Review items carry stable ids (`P1`, `P2`, …). The reviewer restates an open
+item with its `id` to keep it open; open items it omits are resolved; items
+without a known id are new. At most 8 stay open.
+
+### Stopping
+
+- `complete`: author `STATUS: COMPLETE` with a passing check, or a clean review
+  (no items, no blocker) with a passing or absent check.
+- `stalled`: `stall_loops` (default 2) consecutive loops without progress.
+  Progress means the workspace changed and an item was resolved or the check
+  turned green.
+- `max_loops`: `agent_loops` exhausted.
+
 ## System prompt
 
-`build_system_prompt(...)` gives both loop phases a shared policy prompt.
+`build_system_prompt(...)` is the author's policy prompt;
+`build_review_system_prompt()` is the reviewer's.
 
 It emphasizes:
 
@@ -190,21 +237,16 @@ If `--log` or `--log-path` is also provided, logs are fanned out through
 - loop progress,
 - files created across prior loops,
 - files edited across prior loops,
-- recent commands and errors from the last loop,
-- pending items.
+- the last check result and errors,
+- the reviewer's blocker and open review items,
+- the bash allowlist.
 
 That context is assembled by `format_loop_context(...)`, which is how the
 harness keeps the next author session oriented without requiring the agent to
 re-read state files.
 
-Behavior differs slightly on the first loop:
-
-- if the task file can be read up front, its full contents are injected and the
-  agent is told not to re-read it,
-- otherwise the agent is told to read the task file.
-
-Later loops are explicitly told not to re-read the task file or re-glob the
-workspace just for orientation.
+The task's chat is passed as conversation, so the agent is told not to re-read
+the task file or re-glob the workspace just for orientation.
 
 ### Completion contract
 
@@ -257,8 +299,11 @@ Important correction:
 
 `build_review_task(...)` gives the review agent:
 
+- the task's chat as conversation,
 - a harness-computed summary of verified actions,
+- the check result and workspace diff,
 - any rejected tool calls,
+- open review items from earlier loops,
 - the author agent’s final report,
 - the path where it must write `review_output.toml`.
 
@@ -276,13 +321,15 @@ summary = "What actually happened"
 blocker = ""
 
 [[pending]]
-item = "Concrete next step"
+id = "P1"            # omit for a new item
+item = "Concrete defect or missing work"
 ```
 
 It may also emit `[[rule]]` entries and a top-level `retire` list; see
 [Policy](#policy-protected-files-and-binding-rules).
 
 The harness then reads `pending`, `blocker`, `rule`, and `retire` from that file.
+If the file is missing, the author's `NEXT STEPS` become the open items.
 
 ## Loop summaries
 
@@ -306,12 +353,7 @@ Important correction:
 
 ## Early exit conditions
 
-The loop stops early in either of these cases:
-
-1. The author agent emits `STATUS: COMPLETE`.
-2. The review output contains:
-   - no pending items, and
-   - an empty blocker.
+See [Stopping](#stopping).
 
 ## Safety model
 
@@ -374,7 +416,7 @@ differs by field:
 - `protect` is enforced: the path joins the protected set.
 
 Rules are not written in the task file. The review agent adds them on the fly,
-turning each author deviation it sees into a rule, through `review_output.toml`:
+for harmful or repeated author deviations, through `review_output.toml`:
 
 ```toml
 retire = ["R5"]          # optional; review rules that no longer apply

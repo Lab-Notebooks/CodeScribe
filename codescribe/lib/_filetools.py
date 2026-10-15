@@ -51,6 +51,11 @@ def load_chat_template(filepath: Path, *, return_meta: bool = False):
       protect = ["dev/approvals.toml"]
       memory = "dev/mem"   # memory layer; python scripts must live in <memory>/scripts
 
+    Optional check (loop mode):
+      [check]
+      command = "pytest -q"   # argv, no shell; exit 0 means pass
+      timeout = 600
+
     Validation rules:
       - Conversation must start with a 'user' message
       - Roles must alternate strictly: user-assistant-user-assistant ...
@@ -62,7 +67,8 @@ def load_chat_template(filepath: Path, *, return_meta: bool = False):
       - return_meta=False (default): chat_template
       - return_meta=True: (chat_template, meta)
         meta currently includes:
-          {"tools": {"bash": [..], "protect": [..], "memory": str | None}}
+          {"tools": {"bash": [..], "protect": [..], "memory": str | None},
+           "check": {"command": str, "timeout": int}}
     """
     path = Path(filepath)
     if path.suffix != ".toml":
@@ -116,6 +122,18 @@ def load_chat_template(filepath: Path, *, return_meta: bool = False):
                 "protect": protect,
                 "memory": memory,
             }
+        }
+
+    # Optional objective check run by the loop harness after each author phase.
+    check_cfg = data.get("check") if isinstance(data, dict) else None
+    if check_cfg is not None:
+        if not isinstance(check_cfg, dict) or not isinstance(
+            check_cfg.get("command"), str
+        ):
+            raise TypeError(f"[check] must be a table with a 'command' string in {filepath}")
+        meta["check"] = {
+            "command": check_cfg["command"],
+            "timeout": int(check_cfg.get("timeout", 600)),
         }
 
     # --- Enforce triple single quotes for multi-line content ---
