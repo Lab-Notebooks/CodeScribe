@@ -28,7 +28,9 @@ Policy (model-agnostic, enforced by the harness rather than by prompt compliance
   - Rules: added/retired by the review agent via [[rule]] / retire in
     review_output.toml. Every rule is injected into the
     author task; a rule with `deny_bash` also makes the harness refuse matching
-    author bash commands, and a rule with `protect` adds a protected file.
+    author bash commands, and a rule with `protect` adds a protected file while
+    the rule is active. [tools].writable paths (author-owned files such as a
+    work log) can never be protected by a rule.
 
 Convergence (decided by the harness, not by agent self-report):
   - Check: the task file's [check] command runs after every author phase; its
@@ -42,6 +44,7 @@ Convergence (decided by the harness, not by agent self-report):
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import shlex
@@ -225,6 +228,25 @@ def parse_rules(
         )
         next_id += 1
     return rules, problems
+
+
+def protect_conflict(pattern: str, writable: List[str], workdir: Path) -> str:
+    """Return the writable entry a reviewer `protect` pattern would lock, or ""."""
+    p = Path(pattern)
+    if p.is_absolute():
+        try:
+            pattern = str(p.resolve().relative_to(workdir.resolve()))
+        except ValueError:
+            return ""
+    pattern = os.path.normpath(pattern)
+    hits = {pattern}
+    if any(ch in pattern for ch in "*?["):
+        hits |= {str(x.relative_to(workdir)) for x in workdir.glob(pattern)}
+    for w in writable:
+        w = os.path.normpath(w)
+        if fnmatch.fnmatch(w, pattern) or any(fnmatch.fnmatch(h, w) for h in hits):
+            return w
+    return ""
 
 
 class ProtectedFileGuard:
@@ -507,6 +529,7 @@ class PromptLoopRunner:
         self.stop_reason = "max_loops"
         self.rules: List[LoopRule] = []
         self.rule_problems: List[str] = []
+        self.new_rule_problems: List[str] = []  # from the latest review only
         self.guard = ProtectedFileGuard(self.workdir_path)
         self.loops_completed = 0
         self.task_mtime: float = 0.0
@@ -527,10 +550,12 @@ class PromptLoopRunner:
         self.memory = tools_cfg.get("memory")
         self.check = meta.get("check")
         self.python_scripts_dir()  # fail fast if memory escapes the workdir
+        self.writable = list(tools_cfg.get("writable") or [])
         # The task file is always protected; [tools].protect adds more.
         self.guard.add(self.task_rel)
         for pattern in tools_cfg.get("protect") or []:
             self.guard.add(pattern)
+        self.base_protect = list(self.guard.patterns)
 
     def protected_paths(self) -> set:
         return set(self.guard.resolve()) | {self.task_path.resolve()}
@@ -819,14 +844,29 @@ class PromptLoopRunner:
         new_rules, problems = parse_rules(
             review_data.get("rule"), source=f"review:{loop_no}", start_id=next_id
         )
+        # A rule may not lock a file the author must change (e.g. its work log):
+        # drop the protect, keep the text.
+        for rule in new_rules:
+            if not rule.protect:
+                continue
+            hit = protect_conflict(rule.protect, self.writable, self.workdir_path)
+            if hit:
+                problems.append(
+                    f"rule protect {rule.protect!r} targets author-writable {hit!r}; ignored"
+                )
+                rule.protect = ""
         known = {r.text for r in self.rules}
         self.rules.extend(r for r in new_rules if r.text not in known)
         self.rule_problems.extend(problems)
+        self.new_rule_problems = problems
 
         del self.rules[: max(0, len(self.rules) - MAX_REVIEW_RULES)]
 
-        # Protections only accumulate: retiring a rule does not unprotect a file
-        # mid-run, so a confused reviewer cannot reopen a human-owned path.
+        # [tools].protect and the task file stay protected for the whole run, so a
+        # confused reviewer cannot reopen a human-owned path. A rule's protect
+        # lasts only while the rule is active, so retiring a rule undoes a
+        # protection that turned out to block required work.
+        self.guard.patterns = list(self.base_protect)
         for rule in self.rules:
             self.guard.add(rule.protect)
         self.write_rules()
@@ -854,6 +894,7 @@ class PromptLoopRunner:
             protected=[
                 str(p.relative_to(self.workdir_path)) for p in self.guard.resolve()
             ],
+            rule_problems=self.new_rule_problems,
         )
 
         phase_timer = lib.Timer()
@@ -1217,6 +1258,7 @@ def build_review_task(
     items: Optional[List[ReviewItem]] = None,
     rules: Optional[List[LoopRule]] = None,
     protected: Optional[List[str]] = None,
+    rule_problems: Optional[List[str]] = None,
 ) -> str:
     # Harness-verified facts, so the reviewer never has to trust the transcript.
     summary_lines = [f"## Verified actions from loop {loop_index} (harness-computed)"]
@@ -1263,6 +1305,13 @@ def build_review_task(
     policy_block = format_policy_block(rules or [], protected or [])
     if policy_block:
         blocks.append(policy_block)
+    if rule_problems:
+        blocks.append(
+            "\n".join(
+                ["## Your previous rules, partly rejected by the harness"]
+                + [f"  {x}" for x in rule_problems]
+            )
+        )
     if exec_answer:
         blocks.append(f"[Author agent report — loop {loop_index}]\n\n{exec_answer}")
 
@@ -1289,13 +1338,17 @@ def build_review_task(
         "   [[rule]]\n"
         '   text = "What the author must or must not do, and why"\n'
         '   deny_bash = ""   # optional regex; matching author bash commands are refused\n'
-        '   protect = ""     # optional workdir-relative path the author must not change\n'
+        '   protect = ""     # optional path the author may NOT change at all (read-only)\n'
         "   ```\n\n"
         "   Open items you do not restate are treated as resolved — restate only those the\n"
         "   evidence shows are still unresolved.\n"
         "3. Add a [[rule]] only for a harmful or repeated deviation from the task file or the\n"
         "   binding rules. Prefer deny_bash/protect: those are enforced by the harness, plain\n"
-        "   text is not. Do not re-add a rule that is already listed.\n\n"
+        "   text is not. Do not re-add a rule that is already listed.\n"
+        "   `protect` makes a file read-only for the author: never set it on a file the task\n"
+        "   requires the author to create or change (e.g. a log it must append to), even if\n"
+        "   the rule is about that file. If the author was blocked from required work by a\n"
+        "   rule (a protected path or refused command), retire that rule.\n\n"
         "Rules:\n"
         "- A failing harness check, a protected-file violation or a binding-rule breach is a blocker.\n"
         "- If the check passes (or none is configured) and the specification is met, set\n"

@@ -49,6 +49,7 @@ def load_chat_template(filepath: Path, *, return_meta: bool = False):
       [tools]
       bash = ["python3.8", "rg"]
       protect = ["dev/approvals.toml"]
+      writable = ["dev/agent_log.md"]  # author-owned; review rules may not protect these
       memory = "dev/mem"   # memory layer; python scripts must live in <memory>/scripts
 
     Optional check (loop mode):
@@ -67,7 +68,8 @@ def load_chat_template(filepath: Path, *, return_meta: bool = False):
       - return_meta=False (default): chat_template
       - return_meta=True: (chat_template, meta)
         meta currently includes:
-          {"tools": {"bash": [..], "protect": [..], "memory": str | None},
+          {"tools": {"bash": [..], "protect": [..], "writable": [..],
+                     "memory": str | None},
            "check": {"command": str, "timeout": int}}
     """
     path = Path(filepath)
@@ -109,6 +111,14 @@ def load_chat_template(filepath: Path, *, return_meta: bool = False):
         ):
             raise TypeError(f"[tools].protect must be a list of strings in {filepath}")
 
+        # Workdir-relative paths/globs the author must be able to change (loop
+        # mode); reviewer rules may not protect them.
+        writable = tools_cfg.get("writable") or []
+        if not isinstance(writable, list) or not all(
+            isinstance(x, str) for x in writable
+        ):
+            raise TypeError(f"[tools].writable must be a list of strings in {filepath}")
+
         # Workdir-relative memory layer ("mem"); allowlisted python may only run
         # scripts from <mem>/scripts (default mem: .codescribe/mem, applied by
         # make_tools).
@@ -120,6 +130,7 @@ def load_chat_template(filepath: Path, *, return_meta: bool = False):
             "tools": {
                 "bash": bash_tools,
                 "protect": protect,
+                "writable": writable,
                 "memory": memory,
             }
         }

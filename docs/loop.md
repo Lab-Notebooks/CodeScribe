@@ -138,7 +138,8 @@ bash = ["rg", "python", "python3"]
 ```
 
 That `bash` list extends the bounded author-phase bash allowlist. An optional
-`protect = [...]` list names files the agent may not modify; see
+`protect = [...]` list names files the agent may not modify, and an optional
+`writable = [...]` list names author-owned files no review rule may protect; see
 [Policy](#policy-protected-files-and-binding-rules).
 
 An optional `memory` key sets the memory layer (`mem` for short), a
@@ -378,17 +379,20 @@ regardless of which model runs the loop.
 
 ### Protected files
 
-The only task-file setting is one key in the existing `[tools]` table:
+The task-file settings are two keys in the existing `[tools]` table:
 
 ```toml
 [tools]
 bash = ["python3"]
-protect = ["dev/transformations/x/approvals.toml", "dev/transformations/x/*.md"]
+protect = ["dev/transformations/x/approvals.toml", "dev/transformations/x/*_spec.md"]
+writable = ["dev/transformations/x/agent_log.md"]
 ```
 
 Entries are workdir-relative paths or globs. The task file itself is always
-protected. Like `bash`, `protect` is read once at startup and never re-read,
-because the task file sits inside the agent's writable root.
+protected. `writable` only limits what review rules may protect; it does not
+override `protect`. Like `bash`, `protect` and `writable` are read once at
+startup and never re-read, because the task file sits inside the agent's
+writable root.
 
 
 - `write` and `edit` refuse protected paths, and bash refuses them as arguments
@@ -413,7 +417,8 @@ differs by field:
 - `text` is guidance only: compliance depends on the model.
 - `deny_bash` is enforced: matching author bash commands are refused with
   `Error: command refused by rule Rn`.
-- `protect` is enforced: the path joins the protected set.
+- `protect` is enforced: the path joins the protected set while the rule is
+  active.
 
 Rules are not written in the task file. The review agent adds them on the fly,
 for harmful or repeated author deviations, through `review_output.toml`:
@@ -430,8 +435,13 @@ deny_bash = ""
 Safeguards against a weak reviewer:
 
 - `[tools].protect` paths cannot be unprotected by any rule,
-- protections only accumulate during a run (retiring a rule does not unprotect
-  its path),
+- a rule's `protect` cannot target a `[tools].writable` path: the protect is
+  dropped (the rule text is kept), recorded under `problems`, and shown to the
+  next review. Without this, a reviewer writing a rule *about* a file the author
+  must append to (e.g. "log every retirement in agent_log.md") can set
+  `protect` on it and lock the author out, stalling the run,
+- a rule's protection lasts only while the rule is active, so retiring a rule
+  undoes a protection that blocked required work,
 - invalid regexes and patterns that match every command are dropped (the rule
   text is kept) and recorded under `problems` in `rules.toml`,
 - duplicate rule text is ignored, and at most 12 rules stay active
