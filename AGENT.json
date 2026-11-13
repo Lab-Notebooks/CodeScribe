@@ -38,11 +38,14 @@
       "Bounded mode is a practical constraint layer, not an OS sandbox.", 
       "Bounded bash uses an allowlist and rejects shell metacharacters; some commands will fail by design.", 
       "The loop task file can extend the bash allowlist via a [tools] bash = [...] TOML section.", 
+      "If [tools] bash allowlists a python interpreter, python may only run .py scripts under <mem>/scripts, where mem is the [tools] memory layer (default .codescribe/mem); -c, -m, stdin and the REPL are rejected so executed code is kept on disk for provenance.",
       "TOML diagnostic logs include tool_start (with model_reasoning) and tool_end (with output_preview) events for post-run inspection.",
       "Agent hard limits per run: 120 total tool calls, 10 per iteration, 2 repeat-call attempts (read gets 3x). After 3 consecutive all-error iterations the agent is nudged to emit a BLOCKED answer.",
       "Tool outputs are capped at 8000 chars in message history; truncated output includes a paging hint (read(path, offset=N)).",
       "review.toml (review-phase event log) is always written unconditionally. author.toml is cleared and rewritten at the start of each author phase. Both differ from --log, which routes author-phase events to an additional user-specified path.",
-      "The review agent's bash tool is restricted to: ls, stat, pwd, find, grep, head, tail, which, env, rg. No write, edit, or arbitrary shell commands."
+      "The review agent's bash tool is restricted to: ls, stat, pwd, find, grep, head, tail, which, env, rg. No write, edit, or arbitrary shell commands.",
+      "Loop convergence is harness-decided: an optional [check] command (argv, exit 0 = pass) runs after every author phase; STATUS: COMPLETE only ends the run with a passing check, a clean review needs a passing or absent check, and 2 loops without progress stop the run as stalled (see docs/loop.md#convergence).",
+      "Loop task files may list protected files in [tools] protect = [...]. Protected files are reverted after any author bash call that changes them; reviewer-added [[rule]] entries (deny_bash/protect) are enforced by the harness from the next loop (see docs/loop.md)."
     ], 
     "modes": [
       {
@@ -55,7 +58,7 @@
         ], 
         "bounded": true, 
         "command": "loop", 
-        "description": "Repeated author\u2192review cycles. Cross-loop state is carried in-memory; each cycle starts a fresh agent whose context is injected by the harness. The loop exits early if the review agent reports no pending items and no blocker. On-disk artifacts under .codescribe/loop/ are for inspection and crash-resume only.", 
+        "description": "Repeated author\u2192review cycles. Cross-loop state is carried in-memory; each cycle starts a fresh agent whose context is injected by the harness. The loop stops when the task is complete (passing [check] plus author COMPLETE or a clean review) or stalled. On-disk artifacts under .codescribe/loop/ are for inspection and crash-resume only.", 
         "options": {
           "--workdir DIR": "Root directory the agent is bounded to (default: cwd)", 
           "--agent-iterations/-niter N": "Tool-call budget per cycle (default: 30)", 

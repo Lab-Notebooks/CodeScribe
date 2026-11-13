@@ -48,6 +48,14 @@ def load_chat_template(filepath: Path, *, return_meta: bool = False):
     Optional tool policy:
       [tools]
       bash = ["python3.8", "rg"]
+      protect = ["dev/approvals.toml"]
+      writable = ["dev/agent_log.md"]  # author-owned; review rules may not protect these
+      memory = "dev/mem"   # memory layer; python scripts must live in <memory>/scripts
+
+    Optional check (loop mode):
+      [check]
+      command = "pytest -q"   # argv, no shell; exit 0 means pass
+      timeout = 600
 
     Validation rules:
       - Conversation must start with a 'user' message
@@ -59,7 +67,10 @@ def load_chat_template(filepath: Path, *, return_meta: bool = False):
     Returns:
       - return_meta=False (default): chat_template
       - return_meta=True: (chat_template, meta)
-        meta currently includes: {"tools": {"bash": [..]}}
+        meta currently includes:
+          {"tools": {"bash": [..], "protect": [..], "writable": [..],
+                     "memory": str | None},
+           "check": {"command": str, "timeout": int}}
     """
     path = Path(filepath)
     if path.suffix != ".toml":
@@ -93,7 +104,48 @@ def load_chat_template(filepath: Path, *, return_meta: bool = False):
                     "Use a bare command name only (e.g. 'python3.8'), no args or paths."
                 )
 
-        meta = {"tools": {"bash": bash_tools}}
+        # Workdir-relative paths/globs the agent may not modify (loop mode).
+        protect = tools_cfg.get("protect") or []
+        if not isinstance(protect, list) or not all(
+            isinstance(x, str) for x in protect
+        ):
+            raise TypeError(f"[tools].protect must be a list of strings in {filepath}")
+
+        # Workdir-relative paths/globs the author must be able to change (loop
+        # mode); reviewer rules may not protect them.
+        writable = tools_cfg.get("writable") or []
+        if not isinstance(writable, list) or not all(
+            isinstance(x, str) for x in writable
+        ):
+            raise TypeError(f"[tools].writable must be a list of strings in {filepath}")
+
+        # Workdir-relative memory layer ("mem"); allowlisted python may only run
+        # scripts from <mem>/scripts (default mem: .codescribe/mem, applied by
+        # make_tools).
+        memory = tools_cfg.get("memory")
+        if memory is not None and (not isinstance(memory, str) or not memory.strip()):
+            raise TypeError(f"[tools].memory must be a non-empty string in {filepath}")
+
+        meta = {
+            "tools": {
+                "bash": bash_tools,
+                "protect": protect,
+                "writable": writable,
+                "memory": memory,
+            }
+        }
+
+    # Optional objective check run by the loop harness after each author phase.
+    check_cfg = data.get("check") if isinstance(data, dict) else None
+    if check_cfg is not None:
+        if not isinstance(check_cfg, dict) or not isinstance(
+            check_cfg.get("command"), str
+        ):
+            raise TypeError(f"[check] must be a table with a 'command' string in {filepath}")
+        meta["check"] = {
+            "command": check_cfg["command"],
+            "timeout": int(check_cfg.get("timeout", 600)),
+        }
 
     # --- Enforce triple single quotes for multi-line content ---
     bad_quotes = re.findall(r'content\s*=\s*"""', raw_text)

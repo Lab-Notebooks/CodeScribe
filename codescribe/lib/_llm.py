@@ -188,7 +188,10 @@ class OpenAICompModel:
                 return None
 
         text_parts: List[str] = []
-        reasoning_parts: List[str] = []
+        # Streamed reasoning arrives as token-sized deltas; accumulate them
+        # verbatim per source so fragments are concatenated, not line-joined.
+        block_reasoning: List[str] = []
+        delta_reasoning: List[str] = []
         usage = None
         tool_calls: Dict[int, Dict[str, Any]] = {}
 
@@ -218,24 +221,24 @@ class OpenAICompModel:
                         if btype == "text" and btext:
                             text_parts.append(btext)
                         elif btype in ("reasoning", "summary_text") and btext:
-                            reasoning_parts.append(btext)
+                            block_reasoning.append(btext)
 
                 reasoning = getattr(delta, "reasoning", None)
                 if reasoning is not None:
                     if isinstance(reasoning, str):
-                        reasoning_parts.append(reasoning)
+                        delta_reasoning.append(reasoning)
                     else:
                         summary = getattr(reasoning, "summary", None)
                         if isinstance(summary, str):
-                            reasoning_parts.append(summary)
+                            delta_reasoning.append(summary)
                         elif isinstance(summary, list):
                             for item in summary:
                                 if isinstance(item, str):
-                                    reasoning_parts.append(item)
+                                    delta_reasoning.append(item)
                                 else:
                                     text = getattr(item, "text", None)
                                     if text:
-                                        reasoning_parts.append(text)
+                                        delta_reasoning.append(text)
 
                 for call in getattr(delta, "tool_calls", None) or []:
                     index = getattr(call, "index", None)
@@ -278,10 +281,13 @@ class OpenAICompModel:
                 item["_raw_arguments_error"] = raw_args_err
             normalized_tool_calls.append(item)
 
+        reasoning_sources = [
+            "".join(parts).strip() for parts in (delta_reasoning, block_reasoning)
+        ]
         reasoning_text = "\n\n".join(
             p
-            for i, p in enumerate((p.strip() for p in reasoning_parts if p))
-            if p and p not in reasoning_parts[:i]
+            for i, p in enumerate(reasoning_sources)
+            if p and p not in reasoning_sources[:i]
         )
         normalized_usage = _normalize_openai_usage(usage)
         self.last_usage = normalized_usage

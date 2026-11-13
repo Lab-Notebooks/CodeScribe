@@ -123,6 +123,30 @@ Default allowlist:
 - `echo`
 - `sed`
 
+### Python runs only from a scripts directory
+
+When the allowlist includes a python interpreter (`python`, `python3`,
+`python3.11`, `ipython`, `pypy3`, ...), bounded bash only accepts
+
+```
+python3 [safe flags] <mem>/scripts/<name>.py [args...]
+```
+
+so every piece of python the agent executes is left on disk as a file, which
+keeps a record of where results came from. `-c`, `-m`, `-` (stdin), a bare
+`python3` (REPL), flags that take an argument (`-W`, `-X`, ...), non-`.py`
+targets, scripts outside the directory (symlinks are resolved), and missing
+files are all rejected with a hint to write the script first. Allowed flags:
+`-u -B -I -E -s -S -O -OO -q -b -bb -P`.
+
+`mem` is the memory layer, set by the task file's `[tools].memory`. If it is
+not set, it falls back to `.codescribe/mem` (`DEFAULT_MEMORY_DIR`). The
+`scripts` subdirectory (`SCRIPTS_SUBDIR`) is hardcoded. The resulting
+directory must resolve inside the workdir.
+
+The check only looks at how python is invoked. Other allowlisted launchers
+(e.g. `env`, `uv`, `make`) can still start python some other way.
+
 Important current detail:
 
 - even bounded bash still runs through `subprocess.run(..., shell=True)`.
@@ -177,7 +201,7 @@ When bounded, the target path must resolve within the configured root.
 
 ## Toolset constructors
 
-### `make_tools(root, bash_allow=None)`
+### `make_tools(root, bash_allow=None, protected_paths=None, memory=None)`
 
 Returns the default bounded toolset:
 
@@ -187,9 +211,11 @@ Returns the default bounded toolset:
 - `edit`
 - `write`
 
-`bash_allow` extends the default bounded-bash allowlist.
+`bash_allow` extends the default bounded-bash allowlist. If it includes a
+python interpreter, python is restricted to scripts under `<memory>/scripts`
+(default `.codescribe/mem/scripts`); see above.
 
-### `make_readonly_tools(root, bash_allow=None)`
+### `make_readonly_tools(root, bash_allow=None, protected_paths=None, memory=None)`
 
 Returns the bounded read-only toolset:
 
