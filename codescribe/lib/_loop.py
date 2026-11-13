@@ -776,6 +776,7 @@ class PromptLoopRunner:
             "which",
             "env",
             "rg",
+            "git",
         }
         protected = self.protected_paths()
         review_tools = [
