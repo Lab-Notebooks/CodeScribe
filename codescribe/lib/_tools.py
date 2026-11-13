@@ -362,8 +362,9 @@ class BashTool(AgentTool):
             ):
                 rel = self.script_dir_display()
                 caveats.append(
-                    f"python: may only run a .py file under {rel}/ (write it there "
-                    f"first, then run e.g. `python3 {rel}/check.py`); -c, -m, stdin "
+                    f"python: may run an existing .py file anywhere in the workdir; "
+                    f"new scripts must be created under {rel}/ (write there first, "
+                    f"then run e.g. `python3 {rel}/check.py`); -c, -m, stdin "
                     "and the interactive REPL are rejected."
                 )
             if caveats:
@@ -409,8 +410,9 @@ class BashTool(AgentTool):
         """Require `python [safe flags] <script_dir>/x.py [args]`."""
         rel = self.script_dir_display()
         hint = (
-            f"python may only run a script file under {rel}/; write the code there "
-            f"with the write tool, then run `{parts[0]} {rel}/<name>.py`"
+            f"python may run an existing .py anywhere in the workdir; new scripts "
+            f"must be created under {rel}/ with the write tool, then run "
+            f"`{parts[0]} {rel}/<name>.py`"
         )
         script = None
         for arg in parts[1:]:
@@ -426,9 +428,17 @@ class BashTool(AgentTool):
             return f"not a .py script: {script!r}: {hint}"
         try:
             resolved = self.resolve_within_root(self.cwd or Path.cwd(), script)
-            resolved.relative_to(self.script_dir)
-        except ValueError:
-            return f"script outside {rel}/: {script!r}: {hint}"
+        except Exception:
+            return f"argument escapes working directory: {script!r}"
+        # Existing scripts anywhere in the workdir may be run directly; only
+        # newly-created scripts must be placed under script_dir/.
+        if resolved.is_file():
+            return None
+        if self.script_dir is not None:
+            try:
+                resolved.relative_to(self.script_dir)
+            except ValueError:
+                return f"script outside {rel}/: {script!r}: {hint}"
         if not resolved.is_file():
             return f"script not found: {script!r}: {hint}"
         return None
