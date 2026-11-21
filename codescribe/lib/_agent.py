@@ -44,6 +44,7 @@ Rules:
 - Batch ALL independent reads and globs into a single turn before acting — gather everything you need first, then implement.
 - Once you have the information needed, implement immediately without further exploration.
 - Do not re-read files you have already read unless they were modified since your last read.
+- Media files (images, PDFs, videos) cannot be read as text: a read on one returns a MEDIA_ATTACH: marker and the file is attached to the conversation as media — use what is attached, do not re-read it.
 - Prefer one comprehensive edit over multiple small edits to the same file.
 - IMPORTANT: Only use the tools listed here. For shell work, ONLY use the bash tool and ONLY run commands that succeed under the bash tool's safety policy. If a command is blocked, pick an allowed alternative.
 - Avoid repeating identical tool calls with the same arguments unless the workspace changed (e.g., after an edit).
@@ -851,6 +852,41 @@ class Agent:
             )
         )
 
+        # Media discovery: a read result carrying a MEDIA_ATTACH marker is
+        # converted into provider-native content blocks appended as a user
+        # turn, so the model sees the file as image/PDF/frame blocks rather
+        # than mangled text.
+        provider = (
+            "anthropic" if isinstance(self.model, lib.AnthropicModel) else "openai"
+        )
+        for output in outputs:
+            media_path = lib.parse_media_marker(output)
+            if not media_path:
+                continue
+            try:
+                blocks = lib.file_parts(media_path, provider)
+            except Exception as exc:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"Error: could not attach media {media_path}: {exc}",
+                    }
+                )
+                continue
+            # Only the newest attachment stays inline: earlier ones are
+            # stripped to placeholders so the request body does not grow every
+            # turn until the gateway rejects it with 413.
+            lib.strip_inline_media(messages)
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"[Attached media file: {media_path}]"},
+                        *blocks,
+                    ],
+                }
+            )
+
         # Stuck-loop detection: count consecutive iterations where every tool call
         # failed; nudge the agent to emit a BLOCKED answer.
         real_outputs = [o for o in outputs if not o.startswith("Note:")]
@@ -898,6 +934,7 @@ class Agent:
 
         state = RunState()
         empty_reply_nudged = False
+        media_413_retried = False
 
         run_id = lib.new_run_id()
         self.emit(
@@ -930,7 +967,34 @@ class Agent:
 
             model_timer = lib.Timer()
             with self._observer.model_call(iters_done):
-                response = self.model.chat_with_tools(messages, self.tool_schemas())
+                try:
+                    response = self.model.chat_with_tools(
+                        messages, self.tool_schemas()
+                    )
+                except Exception as exc:
+                    # Gateway (e.g. nginx client_max_body_size) rejected the
+                    # body as too large: strip inlined media and retry once.
+                    if (
+                        getattr(exc, "status_code", None) == 413
+                        and not media_413_retried
+                    ):
+                        media_413_retried = True
+                        lib.strip_inline_media(messages)
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "The API gateway rejected the request with 413 "
+                                    "(Request Entity Too Large): attached media files "
+                                    "are inlined as base64 and the body exceeded the "
+                                    "limit. All previously attached media has been "
+                                    "stripped from the request. If you still need a "
+                                    "file, re-attach at most one small file."
+                                ),
+                            }
+                        )
+                        continue
+                    raise
 
             text = (response.get("text") or "").strip()
             tool_calls = response.get("tool_calls") or []

@@ -20,6 +20,8 @@ from glob import glob
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ._media import guess_media_mime, media_attach_marker
+
 __all__ = [
     "AgentTool",
     "ReadTool",
@@ -113,7 +115,10 @@ class ReadTool(AgentTool):
     def __init__(self, root: Optional[Path] = None) -> None:
         desc = (
             "Read a text file. Supports optional 1-indexed offset and line limit. "
-            "By default, prefixes each returned line with a 1-indexed line number."
+            "By default, prefixes each returned line with a 1-indexed line number. "
+            "Media files (images, PDFs, videos) are not returned as text: reading one "
+            "returns a MEDIA_ATTACH marker and the harness attaches the file to the "
+            "conversation as media blocks."
         )
         if root is not None:
             desc += " Access is restricted to the working directory tree."
@@ -168,6 +173,11 @@ class ReadTool(AgentTool):
             return f"Error: file not found: {path}"
         if not os.path.isfile(path):
             return f"Error: not a file: {path}"
+
+        # Media (images/PDFs/video) is not text: return a marker the agent
+        # harness converts into provider-native content blocks on the next turn.
+        if guess_media_mime(path):
+            return media_attach_marker(path)
 
         try:
             with open(path, "r", errors="replace") as fh:
