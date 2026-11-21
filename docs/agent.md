@@ -1,7 +1,7 @@
 # Agent internals
 
 This document describes the current agent implementation in
-`codescribe/lib/_agent.py`.
+`codescribe/lib/agent/`.
 
 ## What the agent does
 
@@ -73,22 +73,12 @@ Current rejection reasons in the code:
 
 ## Tool-calling contract
 
-The agent requires a model object that:
-
-- is an instance of one of `lib.ALLOWED_MODEL_TYPES`, and
-- exposes `chat_with_tools(...)`, and
-- reports `supports_native_tools=True`.
-
-Important clarification:
-
-- In this codebase, `supports_native_tools=True` means the backend can
-  participate in the agent tool loop through the unified interface.
-- For the supported OpenAI-compatible and Anthropic backends, this is
-  provider-native tool calling.
+The model must be a `lib.Model` subclass (`OpenAICompModel` or
+`AnthropicModel`). Both use provider-native tool calling.
 
 ## System prompt and workspace context
 
-The agent always appends a built-in `_REACT_NUDGE` rules block to the provided
+The agent always appends a built-in `SYSTEM_RULES` block to the provided
 system prompt.
 
 Each iteration it also injects a compact `WORKSPACE CONTEXT` block into the most

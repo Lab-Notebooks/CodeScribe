@@ -1,6 +1,6 @@
 # Loop mode
 
-This page documents the current implementation in `codescribe/lib/_loop.py`.
+This page documents the current implementation in `codescribe/lib/loop/`.
 
 ## Overview
 
@@ -8,7 +8,7 @@ This page documents the current implementation in `codescribe/lib/_loop.py`.
 
 The public entry point is:
 
-- `codescribe/lib/_loop.py: prompt_loop()`
+- `codescribe/lib/loop/_runner.py: prompt_loop()`
 
 The implementation is centered on `PromptLoopRunner`.
 
@@ -457,12 +457,3 @@ hard blocker: the author reports `STATUS: INCOMPLETE` instead of working around 
 - `agent_loops = 5`
 - `agent_iterations = 30`
 
-## CLI note
-
-The loop implementation and CLI option defaults agree on the current limits.
-
-However, the command help text in `codescribe/cli/_commands.py` still contains
-older wording that says each loop picks the single most important next task and
-exits. That description is stale relative to the current author prompt in
-`codescribe/lib/_loop.py`, which instructs the agent to complete as much work as
-possible in one session.

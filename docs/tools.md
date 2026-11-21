@@ -1,7 +1,7 @@
 # Tools
 
 This page documents the current tool implementations in
-`codescribe/lib/_tools.py`.
+`codescribe/lib/tools/`.
 
 ## Tool set
 
@@ -28,11 +28,13 @@ Base helpers:
 
 - `run(args)`
 - `to_openai_tool()`
-- `describe_for_prompt()`
 - `resolve_within_root(root, target)`
 
 `resolve_within_root(...)` is the main path-bounding primitive used by file
 operations.
+
+`ReadTool`, `GlobTool`, `EditTool` and `WriteTool` inherit `PathTool`, which
+adds the bounded `root`, `protected_paths`, and the `.git/`/protected write check.
 
 ## `read`
 
@@ -227,11 +229,4 @@ Important correction:
 
 - “read-only” here means no `edit` or `write`. It still includes bounded `bash`.
 
-### `DEFAULT_TOOLS`
-
-`DEFAULT_TOOLS` is built at import time as:
-
-- `make_tools(Path.cwd().resolve())`
-
-In practice, most command paths construct their own rooted toolsets rather than
-relying directly on this module-level default.
+`Agent(model)` without `tools` uses `make_tools(Path.cwd())`.

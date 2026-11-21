@@ -14,7 +14,7 @@ from typing import List, Dict, Set, Any
 
 from codescribe import lib
 
-from ._logging import write_archive_toml
+from codescribe.lib.util._logging import write_archive_toml
 
 __all__ = [
     "load_chat_template",
@@ -141,7 +141,9 @@ def load_chat_template(filepath: Path, *, return_meta: bool = False):
         if not isinstance(check_cfg, dict) or not isinstance(
             check_cfg.get("command"), str
         ):
-            raise TypeError(f"[check] must be a table with a 'command' string in {filepath}")
+            raise TypeError(
+                f"[check] must be a table with a 'command' string in {filepath}"
+            )
         meta["check"] = {
             "command": check_cfg["command"],
             "timeout": int(check_cfg.get("timeout", 600)),

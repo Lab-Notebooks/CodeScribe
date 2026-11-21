@@ -1,7 +1,7 @@
 # Model backends
 
 This page documents the current backend selection logic in
-`codescribe/lib/_llm.py`.
+`codescribe/lib/models/`.
 
 ## Supported model inputs
 
@@ -229,9 +229,6 @@ the failure instead of crashing.
 - **Reasoning is lossy across turns.** Reasoning is re-sent as ordinary
   assistant text, so providers that require their own reasoning items back
   verbatim will not see them.
-- **`reasoning_summary` is computed but unused.** The constructor sets it when
-  `reasoning=True`; `_request_kwargs` never sends it. Only `reasoning_effort`
-  reaches the wire.
 
 ### `anthropic-*`
 
@@ -250,7 +247,7 @@ the failure instead of crashing.
 
 ## Token accounting
 
-`TokenUsage` in `codescribe/lib/_agent.py` normalizes both providers into five
+`TokenUsage` in `codescribe/lib/agent/_run.py` normalizes both providers into five
 counters — `input`, `output`, `reasoning`, `cache_write`, `cache_read` — which
 accumulate across iterations with `+`. `TokenUsage.from_raw` accepts either
 naming convention, preferring OpenAI's `prompt_tokens`/`completion_tokens` and

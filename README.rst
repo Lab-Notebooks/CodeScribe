@@ -446,7 +446,7 @@ with a message similar to:
    to a value containing ``alcf`` (e.g., ``alcf-inference``).
 
 
-Please see the source file ``codescribe/lib/_llm.py`` for full backend
+Please see the source file ``codescribe/lib/models/`` for full backend
 implementation details.
 
 ***********************

@@ -1,183 +1,200 @@
 {
-  "name": "CodeScribe", 
-  "repository": "https://github.com/Lab-Notebooks/CodeScribe", 
-  "title": "CodeScribe \u2014 agent card", 
+  "name": "CodeScribe",
+  "repository": "https://github.com/Lab-Notebooks/CodeScribe",
+  "title": "CodeScribe — agent card",
   "what_this_repo_is": {
     "entry_points": [
-      "CLI: code-scribe (see --help)", 
-      "Agent runtime: codescribe/lib/_agent.py", 
-      "Tool implementations: codescribe/lib/_tools.py", 
-      "Model backends: codescribe/lib/_llm.py", 
-      "Loop runtime: codescribe/lib/_loop.py"
-    ], 
+      "CLI: code-scribe (see --help); commands in codescribe/cli/, public API in codescribe/api/",
+      "Package map and class hierarchy: docs/architecture.md",
+      "Agent runtime: codescribe/lib/agent/",
+      "Tool implementations: codescribe/lib/tools/",
+      "Model backends: codescribe/lib/models/",
+      "Loop runtime: codescribe/lib/loop/",
+      "Shared utilities (logging, telemetry, media, file helpers): codescribe/lib/util/"
+    ],
     "capabilities": [
-      "Incremental Fortran \u2192 C++ translation (with interface-layer support)", 
-      "Code inspection, generation, and update", 
-      "Tool-using coding agent workflows (read/glob/bash/edit/write)", 
-      "Bounded author\u2192review loop over a task file with durable on-disk state"
-    ], 
-    "summary": "AI-assisted framework for scientific software development: incremental Fortran\u2192C++ translation plus code inspection/generation/update and tool-using agent workflows."
-  }, 
-  "schema_version": "1.0", 
+      "Incremental Fortran → C++ translation (with interface-layer support)",
+      "Code inspection, generation, and update",
+      "Tool-using coding agent workflows (read/glob/bash/edit/write)",
+      "Bounded author→review loop over a task file with durable on-disk state"
+    ],
+    "summary": "AI-assisted framework for scientific software development: incremental Fortran→C++ translation plus code inspection/generation/update and tool-using agent workflows."
+  },
+  "schema_version": "1.0",
   "safety": {
     "docs": [
       {
-        "path": "docs/agent.md", 
+        "path": "docs/architecture.md",
+        "description": "Package layout, control flow and class hierarchy"
+      },
+      {
+        "path": "docs/agent.md",
         "description": "Agent architecture and bounded-mode policy"
-      }, 
+      },
       {
-        "path": "docs/loop.md", 
+        "path": "docs/loop.md",
         "description": "Loop mode internals and on-disk artifacts"
-      }, 
+      },
       {
-        "path": "docs/tools.md", 
+        "path": "docs/tools.md",
         "description": "Tool implementations (read/glob/bash/edit/write)"
       }
-    ], 
+    ],
     "notes": [
-      "Bounded mode is a practical constraint layer, not an OS sandbox.", 
-      "Bounded bash uses an allowlist and rejects shell metacharacters; some commands will fail by design.", 
-      "The loop task file can extend the bash allowlist via a [tools] bash = [...] TOML section.", 
+      "Bounded mode is a practical constraint layer, not an OS sandbox.",
+      "Bounded bash uses an allowlist and rejects shell metacharacters; some commands will fail by design.",
+      "The loop task file can extend the bash allowlist via a [tools] bash = [...] TOML section.",
       "If [tools] bash allowlists a python interpreter, python may only run .py scripts under <mem>/scripts, where mem is the [tools] memory layer (default .codescribe/mem); -c, -m, stdin and the REPL are rejected so executed code is kept on disk for provenance.",
-      "TOML diagnostic logs include tool_start (with model_reasoning) and tool_end (with output_preview) events for post-run inspection.",
+      "TOML diagnostic logs include model_response (with model_text and model_reasoning), tool_start (with args and model_text) and tool_end (with output_preview) events for post-run inspection.",
       "Agent hard limits per run: 120 total tool calls, 10 per iteration, 2 repeat-call attempts (read gets 3x). After 3 consecutive all-error iterations the agent is nudged to emit a BLOCKED answer.",
       "Tool outputs are capped at 8000 chars in message history; truncated output includes a paging hint (read(path, offset=N)).",
       "review.toml (review-phase event log) is always written unconditionally. author.toml is cleared and rewritten at the start of each author phase. Both differ from --log, which routes author-phase events to an additional user-specified path.",
-      "The review agent's bash tool is restricted to: ls, stat, pwd, find, grep, head, tail, which, env, rg. No write, edit, or arbitrary shell commands.",
+      "The review agent has read, glob, write (for review_output.toml) and a bash tool restricted to: ls, stat, pwd, find, grep, head, tail, which, env, rg, git. No edit or arbitrary shell commands.",
       "Loop convergence is harness-decided: an optional [check] command (argv, exit 0 = pass) runs after every author phase; STATUS: COMPLETE only ends the run with a passing check, a clean review needs a passing or absent check, and 2 loops without progress stop the run as stalled (see docs/loop.md#convergence).",
-      "Loop task files may list protected files in [tools] protect = [...]. Protected files are reverted after any author bash call that changes them; reviewer-added [[rule]] entries (deny_bash/protect) are enforced by the harness from the next loop (see docs/loop.md)."
-    ], 
+      "Loop task files may list protected files in [tools] protect = [...]. Protected files are reverted after any author bash call that changes them; reviewer-added [[rule]] entries (deny_bash/protect) are enforced by the harness from the next loop (see docs/loop.md).",
+      "Reading a media file (image, PDF, video) attaches it as base64 content blocks; images over CODESCRIBE_MAX_INLINE_MEDIA_BYTES (default 4 MB) are downscaled, larger PDFs are rejected, only the newest attachment stays inline, and an HTTP 413 from the gateway strips inline media and retries once."
+    ],
     "modes": [
       {
         "artifacts": [
-          ".codescribe/loop/run.toml", 
-          ".codescribe/loop/state.toml", 
-          ".codescribe/loop/author.toml", 
-          ".codescribe/loop/review_output.toml", 
-          ".codescribe/loop/review.toml"
-        ], 
-        "bounded": true, 
-        "command": "loop", 
-        "description": "Repeated author\u2192review cycles. Cross-loop state is carried in-memory; each cycle starts a fresh agent whose context is injected by the harness. The loop stops when the task is complete (passing [check] plus author COMPLETE or a clean review) or stalled. On-disk artifacts under .codescribe/loop/ are for inspection and crash-resume only.", 
+          ".codescribe/loop/run.toml",
+          ".codescribe/loop/state.toml",
+          ".codescribe/loop/author.toml",
+          ".codescribe/loop/review_output.toml",
+          ".codescribe/loop/review.toml",
+          ".codescribe/loop/rules.toml",
+          ".codescribe/loop/metadata/"
+        ],
+        "bounded": true,
+        "command": "loop",
+        "description": "Repeated author→review cycles. Cross-loop state is carried in-memory; each cycle starts a fresh agent whose context is injected by the harness. The loop stops when the task is complete (passing [check] plus author COMPLETE or a clean review) or stalled. On-disk artifacts under .codescribe/loop/ are for inspection and crash-resume only.",
         "options": {
-          "--workdir DIR": "Root directory the agent is bounded to (default: cwd)", 
-          "--agent-iterations/-niter N": "Tool-call budget per cycle (default: 30)", 
-          "--reason": "Enable adaptive thinking (Anthropic models only; ignored for other backends)", 
-          "--log": "Write TOML diagnostic events to the default path: .codescribe/logs/toolusage.toml", 
-          "--verbose/-v": "Stream per-iteration tool calls and token usage to stdout", 
-          "--agent-loops/-nloop N": "Number of author\u2192review cycles (default: 5)", 
+          "--model/-m NAME": "Model name with backend prefix (default: $CODESCRIBE_MODEL)",
+          "--workdir DIR": "Root directory the agent is bounded to (default: cwd)",
+          "--agent-iterations/-niter N": "Tool-call budget per cycle (default: 30)",
+          "--reason": "Enable extended reasoning (adaptive thinking on Anthropic, reasoning_effort=high on OpenAI-compatible backends)",
+          "--log": "Write TOML diagnostic events to the default path: .codescribe/logs/toolusage.toml",
+          "--verbose/-v": "Stream per-iteration tool calls and token usage to stdout",
+          "--agent-loops/-nloop N": "Number of author→review cycles (default: 5)",
           "--log-path PATH": "Write TOML diagnostic events to PATH (implies --log)"
         }
-      }, 
+      },
       {
-        "bounded": false,
+        "bounded": true,
         "command": "agent",
-        "description": "Single agent session with unbounded tools (use with care). The TASK argument is either a task string or a path to a TOML task file in the same format as loop; the two forms are mutually exclusive. A task file is loaded as prior conversation, is protected from write/edit/bash, and may extend the bash allowlist through its [tools] section.",
+        "description": "Single agent session with tools bounded to --workdir. The TASK argument is either a task string or a path to a TOML task file in the same format as loop; the two forms are mutually exclusive. A task file is loaded as prior conversation, is protected from write/edit/bash, and may extend the bash allowlist through its [tools] section.",
         "options": {
+          "--model/-m NAME": "Model name with backend prefix (default: $CODESCRIBE_MODEL)",
           "--workdir DIR": "Root directory the agent is bounded to (default: cwd)",
-          "--reason": "Enable adaptive thinking (Anthropic models only; ignored for other backends)",
-          "--log": "Write TOML diagnostic events to the default path: .codescribe/logs/toolusage.toml", 
-          "--agent-iterations/-niter N": "Maximum tool-call iterations (default: 20)", 
-          "--log-path PATH": "Write TOML diagnostic events to PATH (implies --log)", 
+          "--reason": "Enable extended reasoning (adaptive thinking on Anthropic, reasoning_effort=high on OpenAI-compatible backends)",
+          "--log": "Write TOML diagnostic events to the default path: .codescribe/logs/toolusage.toml",
+          "--agent-iterations/-niter N": "Maximum tool-call iterations (default: 20)",
+          "--log-path PATH": "Write TOML diagnostic events to PATH (implies --log)",
           "--verbose/-v": "Stream per-iteration tool calls and token usage to stdout"
         }
       }
     ]
-  }, 
+  },
   "install": {
     "commands": [
-      "python3 -m venv env", 
-      "source env/bin/activate", 
-      "pip install --upgrade pip", 
-      "pip install -e .", 
+      "python3 -m venv env",
+      "source env/bin/activate",
+      "pip install --upgrade pip",
+      "pip install -e .",
       "code-scribe --help"
     ]
-  }, 
+  },
   "model_setup": {
     "anthropic_quickstart": {
       "example_commands": [
-        "ANTHROPIC_API_KEY=sk-ant-... code-scribe agent \"Fix failing tests\" -m anthropic-claude-sonnet-4-6", 
-        "ANTHROPIC_API_KEY=sk-ant-... code-scribe agent \"Fix failing tests\" -m anthropic-claude-sonnet-4-6 --reason", 
+        "ANTHROPIC_API_KEY=sk-ant-... code-scribe agent \"Fix failing tests\" -m anthropic-claude-sonnet-4-6",
+        "ANTHROPIC_API_KEY=sk-ant-... code-scribe agent \"Fix failing tests\" -m anthropic-claude-sonnet-4-6 --reason",
         "ANTHROPIC_API_KEY=sk-ant-... code-scribe loop task.toml -m anthropic-claude-sonnet-4-6 --reason"
-      ], 
+      ],
       "optional_env": [
         "CODESCRIBE_MODEL_REASONING",
         "ANTHROPIC_BASE_URL",
         "CODESCRIBE_MAX_TOKENS"
       ],
-      "reasoning_note": "Pass --reason to agent or loop to enable adaptive thinking. Reasoning is configured at the LLM level (AnthropicModel) and silently ignored by OpenAI-compatible backends. The agent relays returned reasoning_blocks verbatim into the next turn, as required by the Anthropic API. CODESCRIBE_MODEL_REASONING=1 env var is also supported as a fallback for scripting/CI. Recommended for claude-sonnet-4-6 and claude-opus-* on complex agentic tasks. Do not enable for Haiku or older models.",
+      "reasoning_note": "Pass --reason to agent or loop to enable reasoning: adaptive thinking on AnthropicModel, reasoning_effort=high on OpenAI-compatible backends. Anthropic thinking blocks are relayed verbatim into the next turn, as the API requires. CODESCRIBE_MODEL_REASONING=1 is also supported for scripting/CI.",
       "required_env": [
         "ANTHROPIC_API_KEY"
-      ], 
+      ],
       "example_models": [
-        "anthropic-claude-sonnet-4-6", 
+        "anthropic-claude-sonnet-4-6",
         "anthropic-claude-opus-4-8"
-      ], 
+      ],
       "model_prefix": "anthropic-"
-    }, 
+    },
     "environment_variables": [
       {
-        "required": false, 
-        "example": "oaic-llama3.1", 
-        "name": "CODESCRIBE_MODEL", 
-        "description": "Default model name used when -m/--model is omitted."
-      }, 
+        "required": false,
+        "example": "oaic-llama3.1",
+        "name": "CODESCRIBE_MODEL",
+        "description": "Default model name used when -m/--model is omitted (one of the two is required)."
+      },
       {
-        "required": false, 
-        "example": "8192", 
-        "name": "CODESCRIBE_MAX_TOKENS", 
+        "required": false,
+        "example": "8192",
+        "name": "CODESCRIBE_MAX_TOKENS",
         "description": "Maximum output tokens the model may generate per reply. Applies to all backends. Default: 32768."
-      }, 
+      },
       {
-        "required": true, 
-        "example": "http://localhost:11434/v1", 
-        "name": "OPENAI_COMP_BASEURL", 
+        "required": true,
+        "example": "http://localhost:11434/v1",
+        "name": "OPENAI_COMP_BASEURL",
         "description": "Base URL of an OpenAI-compatible API (must include /v1). Used by oaic-* models."
-      }, 
+      },
       {
-        "required": true, 
-        "example": "ollama", 
-        "name": "OPENAI_COMP_PROVIDER", 
+        "required": true,
+        "example": "ollama",
+        "name": "OPENAI_COMP_PROVIDER",
         "description": "Provider label used for routing/auth policy (e.g. ollama, alcf-inference). Used by oaic-* models."
-      }, 
+      },
       {
-        "required": true, 
-        "example": "placeholder", 
-        "name": "OPENAI_COMP_APIKEY", 
+        "required": true,
+        "example": "placeholder",
+        "name": "OPENAI_COMP_APIKEY",
         "description": "API key for the oaic-* client. Some local endpoints accept any placeholder."
-      }, 
+      },
       {
-        "required": false, 
-        "example": "sk-...", 
-        "name": "OPENAI_API_KEY", 
+        "required": false,
+        "example": "sk-...",
+        "name": "OPENAI_API_KEY",
         "description": "API key for hosted OpenAI models (openai-* prefix)."
-      }, 
+      },
       {
-        "required": false, 
-        "example": "sk-ant-...", 
-        "name": "ANTHROPIC_API_KEY", 
+        "required": false,
+        "example": "sk-ant-...",
+        "name": "ANTHROPIC_API_KEY",
         "description": "API key for Anthropic models (anthropic-* prefix). Required when using the recommended Anthropic backend for agent and loop commands."
-      }, 
+      },
       {
-        "required": false, 
-        "example": "https://my-proxy.internal/anthropic", 
-        "name": "ANTHROPIC_BASE_URL", 
+        "required": false,
+        "example": "https://my-proxy.internal/anthropic",
+        "name": "ANTHROPIC_BASE_URL",
         "description": "Optional base URL override for Anthropic models (e.g. a proxy endpoint)."
-      }, 
+      },
       {
         "required": false,
         "example": "1",
         "name": "CODESCRIBE_MODEL_REASONING",
-        "description": "Set to '1' to enable adaptive thinking on supported Anthropic models (claude-opus-*, claude-sonnet-4-6). Has no effect on OpenAI-compatible backends."
+        "description": "Set to '1' to enable reasoning on every backend (adaptive thinking on Anthropic, reasoning_effort=high on OpenAI-compatible)."
+      },
+      {
+        "required": false,
+        "example": "8000000",
+        "name": "CODESCRIBE_MAX_INLINE_MEDIA_BYTES",
+        "description": "Largest media file (raw bytes) inlined as base64 per request; larger images are downscaled. Default: 4000000."
       }
-    ], 
-    "recommended": "Anthropic (anthropic-*) for agent and loop commands \u2014 native tool calling, streaming, and adaptive reasoning are all supported. Use oaic-* for local or OpenAI-compatible endpoints.", 
+    ],
+    "recommended": "Anthropic (anthropic-*) for agent and loop commands — native tool calling, streaming, and adaptive reasoning are all supported. Use oaic-* for local or OpenAI-compatible endpoints.",
     "docs": [
       {
-        "path": "docs/models.md", 
+        "path": "docs/models.md",
         "description": "Backends and env vars"
       }
-    ], 
+    ],
     "example_command": "code-scribe inspect README.rst -m oaic-llama3.1 -q \"Summarize this repo and list key entry points.\""
   }
 }

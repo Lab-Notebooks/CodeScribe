@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "CodeScribe"
-version = "2026.dev"
+version = "2026.11"
 authors = [{ name = "CodeScribe Contributors" }]
 description = "Coding Agent and Code Translation Utility"
 license = { text = "Apache 2.0" }

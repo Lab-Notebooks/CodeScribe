@@ -1,6 +1,6 @@
 # Command layer
 
-This page documents the current command implementations in `codescribe/lib/_cmd.py`
+This page documents the current command implementations in `codescribe/lib/_cmd.py` and `codescribe/lib/agent/_session.py`
 and how they are exposed through the CLI.
 
 ## CLI commands
@@ -151,12 +151,12 @@ CLI flags:
 
 ## `prompt_loop`
 
-`loop` is implemented in `codescribe/lib/_loop.py`, not `_cmd.py`.
+`loop` is implemented in `codescribe/lib/loop/`.
 It is still part of the public command layer and is exposed through:
 
 - `codescribe/cli/_commands.py: loop()`
 - `codescribe/api/_commands.py: loop()`
-- `codescribe/lib/_loop.py: prompt_loop()`
+- `codescribe/lib/loop/_runner.py: prompt_loop()`
 
 See [`loop.md`](./loop.md) for behavior details.
 
